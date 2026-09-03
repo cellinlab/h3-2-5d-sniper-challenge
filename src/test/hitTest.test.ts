@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { hitTest } from "../state/hitTest";
-import type { SceneConfig } from "../types/scene";
+import { SCENE_PROTOCOL_VERSION, type SceneConfig } from "../types/scene";
 
 const scene: SceneConfig = {
+  protocolVersion: SCENE_PROTOCOL_VERSION,
   id: "test",
   title: "t",
   subtitle: "s",

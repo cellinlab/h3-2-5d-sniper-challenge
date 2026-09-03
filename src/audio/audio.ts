@@ -6,6 +6,34 @@
  * intentionally narrow so the later integration with MiniMax Speech
  * and MiniMax Music can replace or layer on top of these cues
  * without touching call sites.
+ *
+ * Background music
+ * ----------------
+ * A single <audio> element owns the round's music. The element is
+ * created lazily on the first `startMusic` call (which always
+ * happens inside a user gesture). The lifecycle is:
+ *
+ *   startMusic(src)  -> create / resume element, play(), loop
+ *   pauseMusic()     -> element.pause(), remember position
+ *   resumeMusic()    -> element.play() from the same position
+ *   stopMusic()      -> element.pause() + currentTime = 0, drop ref
+ *
+ * Speech ducking
+ * --------------
+ * When a voice line plays, music volume ramps down to
+ * `BASELINE_VOLUME * DUCK_RATIO`; on `ended` / `error` (and only
+ * for the *current* voice) it ramps back. A token guards against
+ * the "old voice ended after a new one started" case: if a new
+ * `playVoice` supersedes the old one, the old listener's token
+ * no longer matches the current token and the unduck is skipped.
+ *
+ * Mute
+ * ----
+ * `setMuted(true)` zeroes the Web Audio master gain AND sets
+ * `musicEl.muted = true`; voices in the cache are also muted.
+ * Unmuting restores everything to its last non-muted target
+ * (baseline or ducked) so the player is not jolted back to full
+ * volume mid-duck.
  */
 
 export type SoundCue = "ui" | "scope" | "heartbeat" | "shot" | "hit" | "fail";
@@ -19,6 +47,51 @@ let heartbeatMuted = false;
 let externalMuted = false;
 let currentVoice: HTMLAudioElement | null = null;
 const voiceCache = new Map<string, HTMLAudioElement>();
+
+// ----- Background music state -----
+
+/** Single, module-level element for the active round's music. */
+let musicEl: HTMLAudioElement | null = null;
+/** src of the currently-loaded music, so a re-entry to the same
+ *  scene does not rebuild the element from scratch. */
+let musicSrc: string | null = null;
+/** The volume the music element should sit at when nothing else
+ *  is happening. The mixer ramps to this target on unduck and on
+ *  unmute. */
+const BASELINE_VOLUME = 0.16;
+/** When speech is active, the music volume ramps down to
+ *  `BASELINE_VOLUME * DUCK_RATIO`. */
+const DUCK_RATIO = 0.3;
+/** How long a volume ramp should take. Long enough to be smooth,
+ *  short enough that a fast speech line lands on a still-ducked
+ *  music bed. */
+const RAMP_MS = 220;
+/** The current target volume (not necessarily what the element
+ *  reports at any single frame, because the ramp is animated). */
+let musicTargetVolume = BASELINE_VOLUME;
+/** True while music is below its baseline target. Used so the
+ *  pause / resume / mute paths know whether to ramp back to
+ *  baseline or to the ducked value. */
+let musicDucked = false;
+/** Music is paused because the round was paused (PAUSE event) or
+ *  the document is hidden. The next resumeMusic() must NOT reset
+ *  currentTime, only resume playback. */
+let musicPaused = false;
+/** rAF handle for the current volume ramp; cancelled when a new
+ *  ramp supersedes it. */
+let musicRampRaf: number | null = null;
+/** The user-gesture retry listener (added on autoplay rejection).
+ *  Stored so we can remove it if music is stopped before the
+ *  player clicks again. */
+let musicGestureCleanup: (() => void) | null = null;
+
+// ----- Voice ducking token -----
+
+/** Increments on every `playVoice` call. The current onEnd/onError
+ *  listener captures the token at call time; if a later call
+ *  supersedes it, the listener's token no longer matches and
+ *  unduck is skipped. */
+let voiceToken = 0;
 
 const getContext = (): AudioContext | null => {
   if (typeof window === "undefined") return null;
@@ -233,25 +306,280 @@ export const preloadVoiceAssets = (sources: Array<string | undefined>): void => 
   }
 };
 
-/** Play one generated MiniMax Speech line, replacing any active line. */
+/**
+ * Animate music volume to `target` over RAMP_MS via requestAnimationFrame.
+ * Cancels any in-flight ramp so the new target is honored immediately.
+ * Returns silently when the music element is missing (e.g. the scene
+ * has no music).
+ */
+const rampMusicVolume = (target: number): void => {
+  if (!musicEl) return;
+  if (musicRampRaf !== null) {
+    cancelAnimationFrame(musicRampRaf);
+    musicRampRaf = null;
+  }
+  musicTargetVolume = target;
+  if (externalMuted) {
+    // setMuted owns the volume while muted.
+    musicEl.volume = target;
+    return;
+  }
+  const start = musicEl.volume;
+  const delta = target - start;
+  if (Math.abs(delta) < 0.001) {
+    musicEl.volume = target;
+    return;
+  }
+  const startMs = performance.now();
+  const step = () => {
+    musicRampRaf = null;
+    if (!musicEl) return;
+    const t = Math.min(1, (performance.now() - startMs) / RAMP_MS);
+    musicEl.volume = start + delta * t;
+    if (t < 1 && !musicPaused) {
+      musicRampRaf = requestAnimationFrame(step);
+    } else {
+      musicEl.volume = target;
+    }
+  };
+  musicRampRaf = requestAnimationFrame(step);
+};
+
+const removeMusicGestureRetry = (): void => {
+  if (musicGestureCleanup) {
+    musicGestureCleanup();
+    musicGestureCleanup = null;
+  }
+};
+
+/**
+ * Start the round's background music. Always called from a user
+ * gesture (the scene-select button click). If the same src is
+ * already loaded and only paused, the call resumes from the
+ * remembered position. If a different src is supplied the old
+ * element is dropped. Missing media (e.g. a typo in the path)
+ * must NOT throw — we log nothing in production and leave the
+ * round playable without music.
+ */
+export const startMusic = (src: string): void => {
+  if (typeof window === "undefined" || typeof Audio === "undefined") return;
+  // Same src, currently paused -> just resume from currentTime.
+  if (musicEl && musicSrc === src) {
+    if (musicPaused) {
+      const p = musicEl.play();
+      if (p && typeof p.then === "function") {
+        p.catch(() => undefined);
+      }
+      musicPaused = false;
+    }
+    return;
+  }
+  // New src (or first call) -> drop the old element, build a new one.
+  stopMusic();
+  try {
+    musicEl = new Audio(src);
+  } catch {
+    // Some browsers throw synchronously on a malformed URL.
+    musicEl = null;
+    musicSrc = null;
+    return;
+  }
+  if (!musicEl) {
+    musicSrc = null;
+    return;
+  }
+  musicEl.preload = "auto";
+  musicEl.loop = true;
+  musicEl.muted = externalMuted;
+  musicEl.volume = BASELINE_VOLUME;
+  musicTargetVolume = BASELINE_VOLUME;
+  musicDucked = false;
+  musicPaused = false;
+  musicSrc = src;
+  removeMusicGestureRetry();
+  const startPromise = musicEl.play();
+  if (startPromise && typeof startPromise.then === "function") {
+    startPromise
+      .then(() => {
+        // Resolve any pending ramp target.
+        if (musicEl) musicEl.volume = musicTargetVolume;
+      })
+      .catch(() => {
+        // Autoplay policy rejected the play (no user gesture, or a
+        // very strict browser). The element is loaded; we just wait
+        // for the next user gesture and try again. The promise is
+        // intentionally swallowed — autoplay rejection must never
+        // bubble up to React.
+        //
+        // Both pointerdown and keydown are subscribed so a player
+        // who tabs back in via the keyboard (Esc / any key) is
+        // covered. The first one to fire removes BOTH listeners:
+        // if only the firing one auto-removed (via {once: true}) the
+        // other would still be live and a subsequent gesture of the
+        // other type would double-play the music.
+        removeMusicGestureRetry();
+        const onInteract = () => {
+          if (!musicEl || musicSrc !== src || musicPaused) return;
+          // Drop the partner listener synchronously before we play.
+          removeMusicGestureRetry();
+          const p = musicEl.play();
+          if (p && typeof p.then === "function") {
+            p.then(() => {
+              if (musicEl) musicEl.volume = musicTargetVolume;
+            }).catch(() => undefined);
+          }
+        };
+        window.addEventListener("pointerdown", onInteract, { once: true });
+        window.addEventListener("keydown", onInteract, { once: true });
+        musicGestureCleanup = () => {
+          window.removeEventListener("pointerdown", onInteract);
+          window.removeEventListener("keydown", onInteract);
+        };
+      });
+  }
+};
+
+/** Stop the music and reset to the head. Called on scene-select
+ *  return, missing-media recovery, and round resolution. */
+export const stopMusic = (): void => {
+  removeMusicGestureRetry();
+  if (musicEl) {
+    try {
+      musicEl.pause();
+    } catch {
+      // ignore
+    }
+    musicEl.currentTime = 0;
+  }
+  musicEl = null;
+  musicSrc = null;
+  musicPaused = false;
+  musicDucked = false;
+  musicTargetVolume = BASELINE_VOLUME;
+  if (musicRampRaf !== null) {
+    cancelAnimationFrame(musicRampRaf);
+    musicRampRaf = null;
+  }
+};
+
+/** Pause without resetting currentTime. Round / tab visibility pause. */
+export const pauseMusic = (): void => {
+  if (!musicEl) return;
+  if (musicPaused) return;
+  try {
+    musicEl.pause();
+  } catch {
+    // ignore
+  }
+  musicPaused = true;
+};
+
+/** Resume from the same position. The 22s budget is wall-clock
+ *  gated by the orchestrator; music resume does not influence it. */
+export const resumeMusic = (): void => {
+  if (!musicEl) return;
+  if (!musicPaused) return;
+  const p = musicEl.play();
+  if (p && typeof p.then === "function") {
+    p.catch(() => undefined);
+  }
+  musicPaused = false;
+};
+
+/** Lower the music volume for the duration of a speech line. */
+export const duckForSpeech = (): void => {
+  if (!musicEl) return;
+  musicDucked = true;
+  rampMusicVolume(BASELINE_VOLUME * DUCK_RATIO);
+};
+
+/** Restore the music volume after the (current) speech line ends. */
+export const unduckForSpeech = (): void => {
+  if (!musicEl) return;
+  musicDucked = false;
+  rampMusicVolume(BASELINE_VOLUME);
+};
+
+/** True while a music element is loaded and not paused. */
+export const isMusicPlaying = (): boolean => {
+  return musicEl !== null && !musicPaused;
+};
+
+/** Test-only: read the current music volume (animated, may be in
+ *  flight). Useful for asserting the ramp target was reached. */
+export const __getMusicVolume = (): number => {
+  return musicEl?.volume ?? 0;
+};
+
+/** Test-only: read the current music element's src. */
+export const __getMusicSrc = (): string | null => musicSrc;
+
+/** Test-only: return the cached voice element for a given src, or
+ *  null if it has not been touched. Used by tests to dispatch a
+ *  synthetic `ended` event on a superseded voice (which is no
+ *  longer `currentVoice`). Not part of the production API. */
+export const __getCachedVoice = (src: string): HTMLAudioElement | null => {
+  return voiceCache.get(src) ?? null;
+};
+
+/** Test-only: read the current music pause state. */
+export const __isMusicPaused = (): boolean => musicPaused;
+
+/** Test-only: read the ducked flag. */
+export const __isMusicDucked = (): boolean => musicDucked;
+
+/** Play one generated MiniMax Speech line, replacing any active line.
+ *  The current voiceToken is captured at call time so a stale ended
+ *  event from a superseded voice cannot trigger an unduck. */
 export const playVoice = (src: string | undefined): void => {
   if (!src || externalMuted) return;
   const voice = getVoice(src);
   if (!voice) return;
+  voiceToken += 1;
+  const myToken = voiceToken;
+  duckForSpeech();
   if (currentVoice && currentVoice !== voice) {
-    currentVoice.pause();
+    try {
+      currentVoice.pause();
+    } catch {
+      // ignore
+    }
     currentVoice.currentTime = 0;
   }
   currentVoice = voice;
   voice.currentTime = 0;
   voice.muted = false;
-  void voice.play().catch(() => undefined);
+  const start = voice.play();
+  if (start && typeof start.then === "function") {
+    start.catch(() => {
+      // Autoplay rejected (silent in production).
+      if (voiceToken === myToken) unduckForSpeech();
+    });
+  }
+  const onEnd = () => {
+    voice.removeEventListener("ended", onEnd);
+    voice.removeEventListener("error", onEnd);
+    if (voiceToken === myToken) unduckForSpeech();
+  };
+  voice.addEventListener("ended", onEnd, { once: true });
+  voice.addEventListener("error", onEnd, { once: true });
 };
 
-/** Mute or unmute all cues. */
+/** Mute or unmute all cues including the music element. */
 export const setMuted = (muted: boolean): void => {
   externalMuted = muted;
   for (const voice of voiceCache.values()) voice.muted = muted;
+  if (musicEl) {
+    musicEl.muted = muted;
+    // The element's volume property is what the user hears when
+    // not muted; while muted, the value is irrelevant but we keep
+    // it in sync with the ramp target so unmute is graceful.
+    if (muted) {
+      musicEl.volume = 0;
+    } else {
+      rampMusicVolume(musicDucked ? BASELINE_VOLUME * DUCK_RATIO : BASELINE_VOLUME);
+    }
+  }
   if (masterGain) {
     masterGain.gain.cancelScheduledValues(now());
     masterGain.gain.setTargetAtTime(muted ? 0 : 0.55, now(), 0.05);
@@ -269,11 +597,13 @@ export const __test = {
     }
     externalMuted = false;
     heartbeatMuted = false;
+    stopMusic();
     if (currentVoice) {
       currentVoice.pause();
       currentVoice.currentTime = 0;
     }
     currentVoice = null;
+    voiceToken = 0;
     voiceCache.clear();
     if (masterGain && ctx) {
       try {
@@ -284,4 +614,39 @@ export const __test = {
       }
     }
   },
+  /** Snap the current music volume ramp to its final target. The
+   *  real ramp uses rAF, which is timing-dependent in jsdom; tests
+   *  call this to assert the ramp *target* without sleeping. */
+  completeRamp() {
+    if (musicRampRaf !== null) {
+      cancelAnimationFrame(musicRampRaf);
+      musicRampRaf = null;
+    }
+    if (musicEl) {
+      musicEl.volume = musicTargetVolume;
+    }
+  },
+  /** Force a synthetic voice "ended" event on the current voice
+   *  element so tests can assert the unduck token logic without
+   *  waiting for the audio to actually finish. */
+  endCurrentVoice() {
+    if (currentVoice) {
+      currentVoice.dispatchEvent(new Event("ended"));
+    }
+  },
+  /** Force a synthetic voice "error" event on the current voice
+   *  element. */
+  errorCurrentVoice() {
+    if (currentVoice) {
+      currentVoice.dispatchEvent(new Event("error"));
+    }
+  },
+  /** Inspect the current voice token. */
+  voiceToken() {
+    return voiceToken;
+  },
+  /** Music baseline + duck ratio accessors, used by tests. */
+  baseline: BASELINE_VOLUME,
+  duckRatio: DUCK_RATIO,
+  rampMs: RAMP_MS,
 };

@@ -9,17 +9,23 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { SCENES } from "./scenes/sceneConfig";
 import {
   INITIAL_ROUND_STATE,
+  computeTickState,
+  isGameplayInputAllowed,
   reduceRound,
 } from "./state/roundStateMachine";
 import { clampCoord } from "./state/coordinate";
 import { hitTest } from "./state/hitTest";
 import {
+  pauseMusic,
   playCue,
   playVoice,
   preloadVoiceAssets,
+  resumeMusic,
   setMuted,
   startHeartbeat,
+  startMusic,
   stopHeartbeat,
+  stopMusic,
 } from "./audio/audio";
 import { StartScreen } from "./components/StartScreen";
 import { SceneStage } from "./components/SceneStage";
@@ -40,9 +46,15 @@ export const App = () => {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [resolvedAt, setResolvedAt] = useState<number | null>(null);
   const [hitFlash, setHitFlash] = useState<{ id: string; at: number } | null>(null);
-  const [pointer, setPointer] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const firedRef = useRef<boolean>(false);
   const sceneRef = useRef<SceneConfig | null>(null);
+  // The latest round is always reachable from inside the rAF loop
+  // without putting `round` into the loop's effect dependencies.
+  // If `round` were in the deps, every TICK dispatch would tear the
+  // loop down (lastDispatchedMs resets to -1) and the throttle would
+  // be defeated: the next frame would always dispatch.
+  const roundRef = useRef<typeof round>(round);
+  roundRef.current = round;
   const previousDangerRef = useRef<"calm" | "warning" | "final">("calm");
   const subtitleTimerRef = useRef<number | null>(null);
   const [missionSubtitle, setMissionSubtitle] = useState<string | null>(null);
@@ -73,40 +85,110 @@ export const App = () => {
     }, 2200);
   }, []);
 
-  // Track the live pointer in viewport CSS pixels so SceneStage can
-  // draw the magnified view and the reticle at the cursor location.
-  useEffect(() => {
-    if (screen !== "round") return;
-    const onMove = (e: PointerEvent) => {
-      setPointer({ x: e.clientX, y: e.clientY });
-    };
-    window.addEventListener("pointermove", onMove);
-    return () => window.removeEventListener("pointermove", onMove);
-  }, [screen]);
-
-  // Round clock. Drives the TICK events; stops when the round leaves
-  // observing/scoped.
+  // Round clock. The TICK events are computed on every animation
+  // frame (so the 22000ms timeout fires on the exact frame the
+  // budget is reached) but the React dispatch is throttled to a
+  // stable low frequency. `computeTickState` is pure, so the
+  // throttled dispatch does not change any visible threshold: the
+  // orchestrator only skips a dispatch when the result is the same
+  // object reference (i.e. nothing changed). The first phase change
+  // (e.g. timeout resolving to failure) is always dispatched so the
+  // orchestrator can transition to the result screen.
+  //
+  // The effect reads the latest round from `roundRef`, NOT from a
+  // `round` closure variable. Putting `round` in the dependency
+  // array would tear this loop down on every TICK dispatch (the
+  // ref resets lastDispatchedMs to -1 and the next frame always
+  // re-dispatches), defeating the throttle.
   useEffect(() => {
     if (screen !== "round") return;
     if (round.phase !== "observing" && round.phase !== "scoped") return;
     if (startedAt === null) return;
     let frame = 0;
+    let lastDispatchedMs = -1;
+    const TICK_INTERVAL_MS = 100;
     const tick = () => {
       const elapsed = performance.now() - startedAt;
-      if (sceneRef.current) {
+      const scene = sceneRef.current;
+      const current = roundRef.current;
+      if (!scene) {
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+      if (current.phase !== "observing" && current.phase !== "scoped") {
+        // Round resolved (success/failure) or paused through
+        // PAUSE/RESUME — nothing to advance.
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+      const warningAt = scene.warningAt * scene.roundBudgetMs;
+      const finalWarningAt = scene.finalWarningAt * scene.roundBudgetMs;
+      const next = computeTickState(
+        current,
+        elapsed,
+        warningAt,
+        finalWarningAt,
+        scene.roundBudgetMs,
+      );
+      if (next.phase !== current.phase) {
+        // Phase change (typically TIMEOUT). Dispatch so the result
+        // screen is reached on the exact frame the budget ends.
         dispatch({
           type: "TICK",
           elapsedMs: elapsed,
-          warningAt: sceneRef.current.warningAt * sceneRef.current.roundBudgetMs,
-          finalWarningAt: sceneRef.current.finalWarningAt * sceneRef.current.roundBudgetMs,
-          roundBudgetMs: sceneRef.current.roundBudgetMs,
+          warningAt,
+          finalWarningAt,
+          roundBudgetMs: scene.roundBudgetMs,
         });
+        lastDispatchedMs = elapsed;
+      } else if (elapsed - lastDispatchedMs >= TICK_INTERVAL_MS) {
+        // Throttled periodic dispatch so the HUD has fresh values
+        // but the React update frequency is bounded (~10 Hz) instead
+        // of 60 Hz.
+        dispatch({
+          type: "TICK",
+          elapsedMs: elapsed,
+          warningAt,
+          finalWarningAt,
+          roundBudgetMs: scene.roundBudgetMs,
+        });
+        lastDispatchedMs = elapsed;
       }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [screen, round.phase, startedAt]);
+
+  // P2: pause the round when the tab becomes hidden, resume only on
+  // an explicit user gesture (key press or pointer click). Without
+  // this, a player who switches tabs would lose round budget to a
+  // hidden tab — the 22-second cap is part of the contract and the
+  // tab should not consume engagement time the player cannot see.
+  useEffect(() => {
+    if (screen !== "round") return;
+    if (round.phase !== "observing" && round.phase !== "scoped") return;
+    if (round.pausedAtMs !== null) return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        dispatch({ type: "PAUSE", atMs: performance.now() });
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [screen, round.phase, round.pausedAtMs]);
+
+  // Resume handler. The state machine only consumes a pause; the
+  // orchestrator shifts the wall clock so the 22000ms budget still
+  // represents 22000ms of *visible* engagement.
+  const resumeRound = useCallback(() => {
+    if (round.pausedAtMs === null) return;
+    const shift = performance.now() - round.pausedAtMs;
+    dispatch({ type: "RESUME", shiftMs: shift });
+    // After resuming, anchor startedAt forward by `shift` so the
+    // next rAF tick sees the unpaused elapsed time.
+    if (startedAt !== null) setStartedAt(startedAt + shift);
+  }, [round.pausedAtMs, startedAt]);
 
   // Heartbeat follows the danger level.
   useEffect(() => {
@@ -143,16 +225,35 @@ export const App = () => {
     if (round.phase === "failure") playVoice(scene.audio.voice.failure);
   }, [round.phase, scene]);
 
-  // Promote the screen based on phase changes.
+  // Promote the screen based on phase changes. Music stops on
+  // round resolution (success / failure / missing-media) and on
+  // return to the scene-select screen. The 22s budget is a
+  // wall-clock contract; stopping the music does not shift it.
   useEffect(() => {
     if (screen !== "round") return;
     if (round.phase === "success" || round.phase === "failure") {
       if (resolvedAt === null) setResolvedAt(performance.now());
       setScreen("result");
+      stopMusic();
     } else if (round.phase === "missing-media") {
       setScreen("missing-media");
+      stopMusic();
     }
   }, [screen, round.phase, resolvedAt]);
+
+  // Music pause / resume is driven by the round pause flag. When
+  // the document is hidden the visibilitychange listener dispatches
+  // PAUSE, which sets `pausedAtMs`; this effect then calls
+  // pauseMusic. The 22-second visible-time budget is anchored by
+  // the round clock, not by audio, so a paused music does not
+  // consume the player's time.
+  useEffect(() => {
+    if (round.pausedAtMs !== null) {
+      pauseMusic();
+    } else {
+      resumeMusic();
+    }
+  }, [round.pausedAtMs]);
 
   // Audio mute is kept in sync with the React state on every change.
   useEffect(() => {
@@ -173,6 +274,13 @@ export const App = () => {
     });
     setScreen("round");
     playCue("ui");
+    // Start the scene's background music (if any). Always inside a
+    // user gesture: this runs from the "进入任务" / "再来一局" /
+    // "重新建立观察" click. The lifecycle is self-contained: stop /
+    // pause / resume is driven by the orchestrator.
+    if (s.audio.music) {
+      startMusic(s.audio.music);
+    }
     if (opening === "retry") {
       announce("重新建立观察。", s.audio.voice.retry);
     } else {
@@ -188,6 +296,7 @@ export const App = () => {
     firedRef.current = false;
     dispatch({ type: "RESET" });
     stopHeartbeat();
+    stopMusic();
   }, []);
 
   const retryRound = useCallback(() => {
@@ -220,10 +329,14 @@ export const App = () => {
 
   // Right click: enter or leave scope. The scope entry is taken
   // straight from the event's clientX/Y, so it works on the very
-  // first click even if no pointermove fired beforehand.
+  // first click even if no pointermove fired beforehand. When the
+  // round is paused (or otherwise not in observing/scoped) the
+  // handler is a strict no-op: the resume gesture is delivered by
+  // the paused overlay, not by this gameplay path.
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, sceneCoordAtPointer: NormalizedCoord | null) => {
       e.preventDefault();
+      if (!isGameplayInputAllowed(round)) return;
       if (round.phase === "observing") {
         const entry =
           sceneCoordAtPointer ?? round.crosshair;
@@ -235,15 +348,18 @@ export const App = () => {
         playCue("scope");
       }
     },
-    [round.phase, round.crosshair, exitScope, scene, announce],
+    [round, exitScope, scene, announce],
   );
 
   // Left click in scope fires the single shot. The aim point is the
   // event-derived scene coord, so the click works even when the
-  // mouse hasn't moved since scope entry.
+  // mouse hasn't moved since scope entry. The handler is a strict
+  // no-op when the round is paused, so the resume mousedown cannot
+  // also fire the gun.
   const handleMouseDown = useCallback(
     (button: number, sceneCoordAtPointer: NormalizedCoord | null) => {
       if (button !== 0) return;
+      if (!isGameplayInputAllowed(round)) return;
       if (round.phase !== "scoped") return;
       if (firedRef.current) return;
       if (!scene) return;
@@ -259,16 +375,29 @@ export const App = () => {
       }
       dispatch({ type: "FIRE", hitTargetId: hitId });
     },
-    [round.phase, round.scopeReticle, scene],
+    [round, scene],
   );
 
   const handleMissingMedia = useCallback(() => {
     dispatch({ type: "MISSING_MEDIA" });
+    // The phase change effect above will also stopMusic when the
+    // screen transition fires, but we stop here as well so the
+    // audio bed fades out the instant the recovery UI is shown.
+    stopMusic();
   }, []);
 
   // Keyboard: Enter confirms start, Esc backs out, M toggles mute.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Paused: any non-modifier key resumes the round so the
+      // player can come back from a hidden tab without losing the
+      // 22-second budget.
+      if (round.pausedAtMs !== null && screen === "round") {
+        if (e.key !== "Shift" && e.key !== "Control" && e.key !== "Alt" && e.key !== "Meta") {
+          resumeRound();
+          return;
+        }
+      }
       if (e.key === "Escape") {
         if (screen === "round" && round.phase === "scoped") {
           exitScope();
@@ -304,7 +433,7 @@ export const App = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [screen, round.phase, exitScope, goToStart, retryRound, startRound]);
+  }, [screen, round.phase, round.pausedAtMs, exitScope, goToStart, retryRound, startRound, resumeRound]);
 
   const toggleAudio = useCallback(() => {
     setAudioOn((cur) => !cur);
@@ -376,7 +505,6 @@ export const App = () => {
         crosshair={round.crosshair}
         scopeReticle={round.scopeReticle}
         scopeEntry={round.scopeEntry}
-        pointer={pointer}
         onPointerMove={handlePointerMove}
         onMouseDown={handleMouseDown}
         onContextMenu={handleContextMenu}
@@ -401,6 +529,32 @@ export const App = () => {
       >
         {missionSubtitle}
       </div>
+      {round.pausedAtMs !== null && (
+        // The overlay physically covers the scene stage with a
+        // higher z-index. Its onMouseDown is the only path that
+        // resumes the round; the scene stage's gameplay handlers
+        // are below the overlay and never see the mousedown.
+        // The defensive `isGameplayInputAllowed` guard in the
+        // gameplay handlers is a backstop for any other route.
+        <div
+          className="paused-overlay"
+          data-testid="paused-overlay"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resumeRound();
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resumeRound();
+          }}
+        >
+          <div className="paused-banner" data-testid="paused-banner">
+            已暂停 · 点击或按任意键继续
+          </div>
+        </div>
+      )}
       {(screen === "result" || screen === "missing-media") && (
         <ResultScreen
           variant={

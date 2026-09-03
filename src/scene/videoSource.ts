@@ -157,3 +157,61 @@ export function isMinimalVideoReady(video: MinimalVideo | null | undefined): boo
   if (video.videoWidth <= 0 || video.videoHeight <= 0) return false;
   return true;
 }
+
+/**
+ * Source image dimensions of the shipped target PNG. The logical hit
+ * area is an ellipse anchored at the target's `center` with `halfSize`
+ * extents; the visual art is a 2:3 portrait sprite. Drawing the sprite
+ * directly into the hit area would stretch a 2:3 portrait into a wider
+ * landscape rectangle and make the figure look wrong from the first
+ * frame. The hit area stays where the player expects to click; the
+ * draw rect is computed separately so the image keeps its real aspect
+ * ratio.
+ */
+export const TARGET_SOURCE_WIDTH = 1024;
+export const TARGET_SOURCE_HEIGHT = 1536;
+export const TARGET_SOURCE_ASPECT = TARGET_SOURCE_WIDTH / TARGET_SOURCE_HEIGHT;
+
+/** Draw rect in scene-local CSS pixels. Origin is the top-left. */
+export type TargetDrawRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+/**
+ * Compute an aspect-preserving (contain) draw rectangle for the
+ * target art, centered on the target's `center` and fully contained
+ * inside the logical halfSize box. The hit area lives in scene units
+ * (`halfSize.hU` x `halfSize.hV`); the draw rect lives in scene-local
+ * CSS pixels (`rect.w` x `rect.h`) and uses the source's real
+ * 1024x1536 aspect ratio.
+ *
+ * Returns zeros for non-positive inputs so callers can early-out
+ * when the scene has not been measured yet.
+ */
+export function targetDrawRectFor(
+  center: { u: number; v: number },
+  halfSize: { hU: number; hV: number },
+  rect: { w: number; h: number },
+): TargetDrawRect {
+  if (rect.w <= 0 || rect.h <= 0) return { x: 0, y: 0, w: 0, h: 0 };
+  if (halfSize.hU <= 0 || halfSize.hV <= 0) return { x: 0, y: 0, w: 0, h: 0 };
+  // The hit ellipse is 2*halfSize.hU wide and 2*halfSize.hV tall in
+  // normalized scene units, so in scene-local CSS pixels it spans
+  // 2*halfSize.hU * rect.w by 2*halfSize.hV * rect.h.
+  const boxW = halfSize.hU * 2 * rect.w;
+  const boxH = halfSize.hV * 2 * rect.h;
+  if (boxW <= 0 || boxH <= 0) return { x: 0, y: 0, w: 0, h: 0 };
+  // "contain" inside the hit box: pick the smaller scale so the
+  // sprite fits without cropping OR stretching.
+  const scale = Math.min(boxW / TARGET_SOURCE_WIDTH, boxH / TARGET_SOURCE_HEIGHT);
+  const w = TARGET_SOURCE_WIDTH * scale;
+  const h = TARGET_SOURCE_HEIGHT * scale;
+  // Anchor the draw rect on the same scene center the hit ellipse
+  // uses, so the figure stays where the player expects to see it.
+  const cx = center.u * rect.w;
+  const cy = center.v * rect.h;
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}

@@ -15,6 +15,9 @@ import {
   sceneCoordToClient,
   sceneCoordToScreenInScope,
 } from "../state/coordinate";
+import { hitTest } from "../state/hitTest";
+import { SCENES } from "../scenes/sceneConfig";
+import { SCENE_PROTOCOL_VERSION, type SceneConfig } from "../types/scene";
 
 type FakeMouseEvent = {
   clientX: number;
@@ -253,5 +256,81 @@ describe("fire aim from a single left-click event", () => {
     const observingState: StageState = { ...scopedState, phase: "observing", scopeEntry: null };
     expect(handleMouseDownForTest(eRight, scopedState)).toEqual({ ignore: true });
     expect(handleMouseDownForTest(eLeft, observingState)).toEqual({ ignore: true });
+  });
+});
+
+/**
+ * The P0-3 interaction contract: when a player right-clicks exactly
+ * on a target's center, the scope entry is taken from that same
+ * event (no prior pointermove required), and a subsequent left click
+ * at the lens center must produce an aim that lands inside the
+ * target's hit ellipse. This guards against a class of regressions
+ * where the first scope click drifts because the reticle started
+ * from a stale wide-view crosshair instead of the entry event.
+ */
+describe("first left click at the lens center hits the target that anchored the scope", () => {
+  const findActiveScene = (): SceneConfig => {
+    const active = SCENES.find((s) => s.status === "active");
+    if (!active || active.targets.length === 0) {
+      throw new Error("expected an active scene with at least one target");
+    }
+    // Sanity: SCENES should carry the protocol version too.
+    if (active.protocolVersion !== SCENE_PROTOCOL_VERSION) {
+      throw new Error("active scene is missing the protocol version");
+    }
+    return active;
+  };
+
+  it("scope entry derived from the right-click event + left click at lens center hits the target", () => {
+    const scene = findActiveScene();
+    const target = scene.targets[0];
+    const rect = fitSceneRect(1920, 1080);
+
+    // 1. Player right-clicks exactly on the target's center.
+    const rightClickClient = sceneCoordToClient(target.center, rect);
+    const eRight = makeEvent(rightClickClient.x, rightClickClient.y, 2);
+    const initialState: StageState = {
+      phase: "observing",
+      crosshair: { u: 0.5, v: 0.5 },
+      scopeEntry: null,
+      scopeReticle: { u: 0.5, v: 0.5 },
+      rect,
+    };
+    const enter = handleContextMenuForTest(eRight, initialState, () => undefined);
+    expect(enter.type).toBe("enter");
+    if (enter.type !== "enter") return;
+
+    // The scope entry must come from the right-click event, not the
+    // pre-existing wide crosshair (which was {0.5, 0.5}).
+    expect(enter.at.u).toBeCloseTo(target.center.u, 5);
+    expect(enter.at.v).toBeCloseTo(target.center.v, 5);
+
+    // 2. Player immediately left-clicks at the lens center WITHOUT
+    //    moving the mouse. The lens center is the screen position
+    //    of the entry; clicking there must produce an aim that is
+    //    (a) very close to the entry, and (b) inside the target's
+    //    hit ellipse so hitTest() returns the target id.
+    const scopeState: StageState = {
+      ...initialState,
+      phase: "scoped",
+      scopeEntry: enter.at,
+      scopeReticle: enter.at,
+    };
+    const lens = lensRectForEntry(enter.at, rect, 0.5);
+    const cx = lens.x + lens.w / 2;
+    const cy = lens.y + lens.h / 2;
+    const eLeft = makeEvent(cx, cy, 0);
+    const fire = handleMouseDownForTest(eLeft, scopeState);
+    expect("aim" in fire).toBe(true);
+    if (!("aim" in fire)) return;
+    expect(fire.aim.u).toBeCloseTo(target.center.u, 5);
+    expect(fire.aim.v).toBeCloseTo(target.center.v, 5);
+    expect(hitTest(fire.aim, scene)).toBe(target.id);
+  });
+
+  it("an aim exactly on the target's center always hits, even on a stretched halfSize", () => {
+    const scene = findActiveScene();
+    const target = scene.targets[0];
+    expect(hitTest(target.center, scene)).toBe(target.id);
   });
 });

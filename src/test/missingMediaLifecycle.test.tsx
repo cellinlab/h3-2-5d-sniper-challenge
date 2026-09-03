@@ -32,7 +32,6 @@ describe("SceneStage missing-media lifecycle", () => {
         crosshair={{ u: 0.5, v: 0.5 }}
         scopeReticle={{ u: 0.5, v: 0.5 }}
         scopeEntry={null}
-        pointer={{ x: 0, y: 0 }}
         onPointerMove={() => undefined}
         onMouseDown={() => undefined}
         onContextMenu={() => undefined}

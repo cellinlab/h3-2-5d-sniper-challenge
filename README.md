@@ -2,8 +2,6 @@
 
 一个由 MiniMax Code 构建、把 H3 动态场景变成可玩空间的桌面浏览器狙击挑战。
 
-玩家先在完整场景中观察和移动准星，开镜后自动进入准星所在的局部视野。在位置暴露前找到隐藏目标并完成射击，否则会被对方抢先发现。
-
 玩家先在完整动态场景中移动准星，右键开镜后自动进入准星所在的局部视野。在 22 秒的隐藏时限内找到目标并完成唯一的一枪，否则会被对方先一步锁定。
 
 ## 已实现
@@ -12,9 +10,10 @@
 - 宽景和 2.6 倍瞄准镜共享同一个 `HTMLVideoElement`、同一 `currentTime` 和同一 16:9 源裁切；
 - `4 × 3` 逻辑定位网格与归一化坐标，不为每格创建一条容易失去连续性的视频；
 - 原创透明目标、同坐标 hitbox、无数字倒计时的两级危险提示；
-- MiniMax Speech 2.8 任务语音、视频环境音静音联动和 Web Audio 交互反馈；
+- MiniMax Speech 2.8 任务语音、MiniMax Music 3.0 循环配乐、H3 视频环境音与 Web Audio 交互反馈；人声播放时配乐自动降低到基线的 30%；
 - 缺失媒体阻断、视频自动播放恢复、窗口比例与高 DPR 画布对齐；
-- 8 个测试文件、127 项测试，以及 TypeScript + Vite 生产构建。
+- 版本化场景协议、目标原始比例、镜心首击、渐进提示、标签隐藏暂停与音频生命周期；
+- 10 个测试文件、178 项测试，以及 TypeScript + Vite 生产构建。
 
 本仓库只保存代码、Prompt、参数与复现说明。H3 视频、语音、截图、录屏、账户信息和 API Key 不进入公开 Git 历史。
 
@@ -48,14 +47,16 @@ npm run dev
 ```text
 public/generated/north-relay-h3-4s-1080p-runtime.mp4
 public/generated/target-operative.png
+public/generated/audio/music-blue-hour-relay.mp3
 ```
 
 - 视频：任意可在浏览器解码的 16:9 H.264 MP4；建议固定机位。当前场景会循环播放，宽景和瞄准镜自动共享时间轴。项目实战版把原始 `1344×768` H3 文件居中裁为 16:9，用 ffmpeg 对首尾画面与音轨做 0.5 秒交叉淡化，再以 Lanczos 重采样至 1080P 并轻微锐化；这是浏览器运行衍生版，不宣称为原生 2K。
 - 目标：带透明通道的虚构人物或机器人 PNG。默认标定点为 `(u=0.625, v=0.7)`，可在 [`src/scenes/sceneConfig.ts`](src/scenes/sceneConfig.ts) 修改位置、尺寸和命中范围。
+- 音乐：可循环的器乐 MP3。实战版使用 MiniMax Audio Music 3.0 网页生成的 `Blue Hour Relay`，约 2:16、44.1 kHz stereo；音乐基线音量为 0.16，Speech 播放时平滑降低到 0.048。缺少音乐不会阻塞游戏，但完整录制需要准备该文件。
 
 最终 H3 文件可替换上述 MP4，或把 `masterMedia.src` 改为新的本地路径。不要提交生成媒体、供应商响应或账户 ID。
 
-## 生成 MiniMax Speech
+## 生成 MiniMax Speech / Music
 
 复制本地环境文件并只在自己的机器上填入 Key：
 
@@ -65,9 +66,9 @@ cp .env.example .env.local
 npm run media:minimax:speech
 ```
 
-脚本使用 `/v1/t2a_v2`、`speech-2.8-hd`、系统音色 `Chinese (Mandarin)_Reliable_Executive`，生成七条短任务语音到 `public/generated/audio/`。`.env.local` 和音频目录均已被 Git 忽略。
+Speech 脚本使用 `/v1/t2a_v2`、`speech-2.8-hd`、系统音色 `Chinese (Mandarin)_Reliable_Executive`，生成七条短任务语音到 `public/generated/audio/`。`.env.local` 和音频目录均已被 Git 忽略。
 
-`npm run media:minimax:music` 只保留可复现实验入口；当前项目没有生成或使用 MiniMax Music 资产，背景声来自视频，精确交互音效来自 Web Audio。
+`npm run media:minimax:music` 保留官方 Music API 的可复现实验入口，默认模型为 `music-2.6-free`。当前账号实际调用返回“Music API 不再向新用户开放”，所以实战版改在已登录的 MiniMax Audio Music 3.0 网页生成两条候选，再把选中的 MP3 放到上述路径。不要把网页生成描述成 API 调用成功；完整 Prompt、选择理由与文件参数见 [`prompts/music.md`](prompts/music.md)。
 
 ## H3 提示词与真实尝试
 
@@ -96,7 +97,7 @@ round state machine: observe → scope → success / failure
 - [`src/state/roundStateMachine.ts`](src/state/roundStateMachine.ts)：一次射击、危险升级、超时与重置；
 - [`src/state/validation.ts`](src/state/validation.ts)：扩展协议校验并拒绝未知字段；
 - [`src/scene/videoSource.ts`](src/scene/videoSource.ts)：视频源裁切和媒体就绪判断；
-- [`src/audio/audio.ts`](src/audio/audio.ts)：语音播放、Web Audio 音效与统一静音；
+- [`src/audio/audio.ts`](src/audio/audio.ts)：Music 生命周期、Speech duck、Web Audio 音效与四层统一静音；
 - [`specs/`](specs/VISION.md)：愿景、设计与验收标准；
 - [`prompts/`](prompts/README.md)：H3、Speech 与 Music 的提示词和真实参数记录。
 
@@ -107,7 +108,7 @@ npm test
 npm run build
 ```
 
-除单元测试外，项目还在真实浏览器中验证了：准星对应开镜位置、镜内一次命中、22 秒超时、两级危险提示、重玩重置、静音联动、开镜退出时视频不重置，以及临时移走 MP4 后的友好错误界面。
+除单元测试外，项目还在 1280×720 的真实浏览器中验证了：宽景移动、准星位置右键开镜、镜内移动、回到目标中心后一次命中、22 秒超时、两级危险提示、重玩、统一静音、右键退出瞄准与友好错误界面。最终一次命中用时 1.4 秒，浏览器控制台无 error / warning；Music 文件由本地服务器返回 HTTP 200，时长、大小与 SHA-256 和选中版本一致。
 
 ## 联系我
 

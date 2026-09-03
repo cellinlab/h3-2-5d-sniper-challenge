@@ -66,6 +66,12 @@ export type MasterMedia =
     };
 
 export type SceneConfig = {
+  /**
+   * Protocol version of the scene manifest. The runtime validator
+   * compares it against `SCENE_PROTOCOL_VERSION`; a missing or
+   * mismatched value is rejected before the scene can enter a round.
+   */
+  protocolVersion: typeof SCENE_PROTOCOL_VERSION;
   id: string;
   /** Chinese display title e.g. "北境中继站" */
   title: string;

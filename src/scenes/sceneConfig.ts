@@ -10,8 +10,10 @@
  */
 
 import { SCENE_PROTOCOL_VERSION, type SceneConfig } from "../types/scene";
+import { validateSceneConfig } from "../state/validation";
 
 const NORTH_RELAY: SceneConfig = {
+  protocolVersion: SCENE_PROTOCOL_VERSION,
   id: "north-relay",
   title: "北境中继站",
   subtitle: "工业设施 · 蓝色时刻",
@@ -48,7 +50,7 @@ const NORTH_RELAY: SceneConfig = {
       failure: "/generated/audio/voice-failure.mp3",
       retry: "/generated/audio/voice-retry.mp3",
     },
-    music: null,
+    music: "/generated/audio/music-blue-hour-relay.mp3",
   },
   roundBudgetMs: 22000,
   warningAt: 0.55,
@@ -57,6 +59,7 @@ const NORTH_RELAY: SceneConfig = {
 };
 
 const BLACK_RAIN_PORT: SceneConfig = {
+  protocolVersion: SCENE_PROTOCOL_VERSION,
   id: "black-rain-port",
   title: "黑雨集装港",
   subtitle: "港口码头 · 暴雨夜",
@@ -75,6 +78,7 @@ const BLACK_RAIN_PORT: SceneConfig = {
 };
 
 const MORNING_OBSERVATORY: SceneConfig = {
+  protocolVersion: SCENE_PROTOCOL_VERSION,
   id: "morning-observatory",
   title: "晨曦天文台",
   subtitle: "沙漠高地 · 黎明",
@@ -97,5 +101,22 @@ export const SCENES: ReadonlyArray<SceneConfig> = [
   BLACK_RAIN_PORT,
   MORNING_OBSERVATORY,
 ];
+
+/**
+ * Validate every exported scene at module load. A malformed scene
+ * must crash the bundle immediately rather than reaching a player
+ * round and silently rendering a broken state. The orchestrator
+ * (App.tsx) relies on the runtime SCENES being well-formed; tests
+ * exercise the validator, but a real release runs the validator
+ * exactly once when this module is first imported.
+ */
+for (const scene of SCENES) {
+  const result = validateSceneConfig(scene);
+  if (!result.ok) {
+    throw new Error(
+      `[sceneConfig] exported scene "${scene.id}" failed validation: ${result.errors.join("; ")}`,
+    );
+  }
+}
 
 export const SCENES_PROTOCOL_VERSION = SCENE_PROTOCOL_VERSION;

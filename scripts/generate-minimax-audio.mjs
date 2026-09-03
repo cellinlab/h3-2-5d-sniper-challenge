@@ -26,6 +26,11 @@ const MUSIC_PROMPT = [
   "The loop must stay quiet enough beneath short Mandarin mission-control speech.",
 ].join(" ");
 
+// MiniMax's current international API exposes a free-tier variant
+// with the same instrumental contract. Keep the model configurable
+// for reproducibility without putting account details in source.
+const MUSIC_MODEL = process.env.MINIMAX_MUSIC_MODEL ?? "music-2.6-free";
+
 function parseEnv(source) {
   const entries = source
     .split(/\r?\n/)
@@ -135,7 +140,7 @@ async function generateMusic(apiKey) {
   const result = await postJson(
     "/v1/music_generation",
     {
-      model: "music-2.6",
+      model: MUSIC_MODEL,
       prompt: MUSIC_PROMPT,
       is_instrumental: true,
       stream: false,
@@ -157,7 +162,7 @@ async function generateMusic(apiKey) {
     name: "stealthUnderscore",
     prompt: MUSIC_PROMPT,
     file: filename,
-    model: "music-2.6",
+    model: MUSIC_MODEL,
     bytes: bytes.length,
     sha256: sha256(bytes),
   };

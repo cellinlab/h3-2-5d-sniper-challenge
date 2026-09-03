@@ -134,12 +134,16 @@ export function validateSceneConfig(raw: unknown): ValidationResult {
     return { ok: false, errors: ["scene config must be an object"] };
   }
 
-  // protocol version is required
+  // protocol version is required and must match exactly
   if (!("protocolVersion" in raw)) {
     errors.push("scene config is missing protocolVersion");
+  } else if (!isNumber(raw.protocolVersion) || !Number.isInteger(raw.protocolVersion)) {
+    errors.push(
+      `scene.protocolVersion must be an integer (got ${String(raw.protocolVersion)})`,
+    );
   } else if (raw.protocolVersion !== SCENE_PROTOCOL_VERSION) {
     errors.push(
-      `unsupported protocolVersion: ${String(raw.protocolVersion)} (expected ${SCENE_PROTOCOL_VERSION})`,
+      `unsupported protocolVersion: ${raw.protocolVersion} (expected ${SCENE_PROTOCOL_VERSION})`,
     );
   }
 
@@ -181,12 +185,15 @@ export function validateSceneConfig(raw: unknown): ValidationResult {
     }
   }
 
-  // targets
+  // targets: an active playable scene must have at least one target;
+  // a locked teaser scene may legitimately have zero.
   if (!Array.isArray(raw.targets)) {
     errors.push("scene.targets must be an array");
   } else {
-    if (raw.targets.length === 0) {
-      errors.push("scene.targets must contain at least one target");
+    if (raw.targets.length === 0 && raw.status !== "locked") {
+      errors.push(
+        "scene.targets must contain at least one target (active scenes need a target; locked teaser scenes may have zero)",
+      );
     }
     raw.targets.forEach((t: unknown, i: number) => {
       const path = `scene.targets[${i}]`;

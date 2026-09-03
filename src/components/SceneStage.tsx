@@ -49,17 +49,12 @@ import {
 } from "../state/coordinate";
 import {
   isVideoReady,
+  targetDrawRectFor,
   videoSourceRectForScene,
   type VideoSourceRect,
 } from "../scene/videoSource";
 import type { NormalizedCoord, SceneConfig, TargetPlacement } from "../types/scene";
 import { Reticle } from "./Reticle";
-
-type StagePointer = {
-  /** absolute clientX/Y in viewport CSS pixels */
-  x: number;
-  y: number;
-};
 
 type Props = {
   scene: SceneConfig;
@@ -67,9 +62,6 @@ type Props = {
   crosshair: NormalizedCoord;
   scopeReticle: NormalizedCoord;
   scopeEntry: NormalizedCoord | null;
-  /** Live pointer in viewport CSS pixels. SceneStage needs it to
-   *  position the scope reticle and to draw the magnified view. */
-  pointer: StagePointer;
   onPointerMove: (coord: NormalizedCoord | null) => void;
   /** Right-click handler. Receives the resolved normalized scene
    *  coord at the pointer position so the caller does not depend
@@ -94,6 +86,13 @@ type Props = {
 /**
  * Draw the target art into an already-translated context. All
  * parameters are scene-local; no rect.x / rect.y allowed here.
+ *
+ * The logical hit area is the halfSize ellipse (used by `hitTest`).
+ * The draw rect is computed by `targetDrawRectFor` so the 1024x1536
+ * portrait art is contained inside the hit box without distortion.
+ * The hit area and the draw rectangle are intentionally separate:
+ * the player can land the shot anywhere inside the ellipse, while
+ * the figure stays recognizable as a 2:3 portrait.
  */
 const drawTargetSceneLocal = (
   ctx: CanvasRenderingContext2D,
@@ -102,17 +101,15 @@ const drawTargetSceneLocal = (
   img: HTMLImageElement,
   flash: boolean,
 ) => {
-  const x = target.center.u * rect.w - target.halfSize.hU * rect.w;
-  const y = target.center.v * rect.h - target.halfSize.hV * rect.h;
-  const w = target.halfSize.hU * 2 * rect.w;
-  const h = target.halfSize.hV * 2 * rect.h;
+  const draw = targetDrawRectFor(target.center, target.halfSize, rect);
+  if (draw.w === 0 || draw.h === 0) return;
   ctx.save();
   if (flash) {
     ctx.shadowColor = "rgba(214, 150, 74, 0.8)";
     ctx.shadowBlur = 30;
   }
   ctx.globalAlpha = flash ? 1 : 0.92;
-  ctx.drawImage(img, x, y, w, h);
+  ctx.drawImage(img, draw.x, draw.y, draw.w, draw.h);
   ctx.restore();
 };
 
@@ -260,7 +257,6 @@ export const SceneStage = ({
   crosshair,
   scopeReticle,
   scopeEntry,
-  pointer,
   onPointerMove,
   onMouseDown,
   onContextMenu,
@@ -277,6 +273,12 @@ export const SceneStage = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioOnRef = useRef(audioOn);
   const rafRef = useRef<number | null>(null);
+  // The live viewport pointer is owned by SceneStage now (it used
+  // to be hoisted into App). Keeping it here means each pointer
+  // event triggers a state update local to the scene component and
+  // does not bubble through the global App reducer.
+  const pointerRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [pointerTick, setPointerTick] = useState<number>(0);
   const [rect, setRect] = useState<SceneRect>({ x: 0, y: 0, w: 0, h: 0 });
   const [targetImg, setTargetImg] = useState<HTMLImageElement | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
@@ -502,21 +504,73 @@ export const SceneStage = ({
     drawFrame(performance.now());
     video?.addEventListener("loadeddata", drawFromVideoEvent);
     video?.addEventListener("timeupdate", drawFromVideoEvent);
-    rafRef.current = requestAnimationFrame(animate);
+
+    // Prefer `requestVideoFrameCallback` when the video element is
+    // ready. The browser fires it exactly when a new video frame is
+    // available, so the wide and scope canvases draw the same
+    // picture in lock-step with the video's intrinsic clock instead
+    // of polling at 60 Hz. Fall back to rAF for procedural scenes
+    // and for browsers that lack the API. The wide/scope canvases
+    // are still driven from the same `drawFrame` and the same
+    // `sourceRect`, so they cannot drift regardless of which clock
+    // triggers the draw.
+    type RVFCVideo = HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    let rvfcHandle: number | null = null;
+    const rvfcVideo = video as RVFCVideo | null;
+    if (rvfcVideo?.requestVideoFrameCallback) {
+      const rvfcAnimate = () => {
+        drawFrame(performance.now());
+        rvfcHandle = rvfcVideo.requestVideoFrameCallback!(rvfcAnimate);
+      };
+      rvfcHandle = rvfcVideo.requestVideoFrameCallback(rvfcAnimate);
+    } else {
+      rafRef.current = requestAnimationFrame(animate);
+    }
+
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
+      if (rvfcHandle !== null && rvfcVideo?.cancelVideoFrameCallback) {
+        rvfcVideo.cancelVideoFrameCallback(rvfcHandle);
+      }
       video?.removeEventListener("loadeddata", drawFromVideoEvent);
       video?.removeEventListener("timeupdate", drawFromVideoEvent);
     };
   }, [rect, danger, scene, startedAt, showTarget, targetImg, hitFlash, phase, scopeEntry]);
 
-  // Pointer move. Convert the event to a scene coord using only
-  // clientX/clientY + the active scene rect, so the result is
-  // independent of any previous pointer event.
+  // Pointer move. The raw event only writes the latest clientX/Y
+  // into a ref. A pending requestAnimationFrame flush is scheduled
+  // at most once per frame; when it fires, the ref is read and we
+  // bump `pointerTick` + call `onPointerMove` exactly once. This is
+  // real per-frame batching: a 240Hz+ high-DPI mouse cannot flood
+  // the React scheduler with one update per event, and unlike the
+  // previous 16ms timestamp check, no event in the window is
+  // dropped (the ref always holds the freshest position and the
+  // next rAF flush picks it up).
+  const pendingPointerRafRef = useRef<number | null>(null);
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    onPointerMove(clientToSceneCoord(e.clientX, e.clientY, rect));
+    pointerRef.current = { x: e.clientX, y: e.clientY };
+    if (pendingPointerRafRef.current !== null) return;
+    pendingPointerRafRef.current = requestAnimationFrame(() => {
+      pendingPointerRafRef.current = null;
+      const { x, y } = pointerRef.current;
+      setPointerTick((n) => n + 1);
+      onPointerMove(clientToSceneCoord(x, y, rect));
+    });
   };
+  // Cancel any pending flush on unmount so we never dispatch into
+  // an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (pendingPointerRafRef.current !== null) {
+        cancelAnimationFrame(pendingPointerRafRef.current);
+        pendingPointerRafRef.current = null;
+      }
+    };
+  }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -538,6 +592,43 @@ export const SceneStage = ({
     onContextMenu(e, clientToSceneCoord(e.clientX, e.clientY, rect));
   };
 
+  // Onboarding hint. A small transient copy that follows the phase
+  // and fades after the relevant first action. Kept on the upper
+  // third of the stage (well above the scope's bottom-center anchor
+  // and the warning text) so it never occludes the scene. The hint
+  // uses a short display window and a single fade transition; it
+  // never blocks input and never becomes a modal.
+  const [hintVisible, setHintVisible] = useState<boolean>(true);
+  useEffect(() => {
+    if (phase !== "observing" && phase !== "scoped") {
+      setHintVisible(false);
+      return;
+    }
+    setHintVisible(true);
+    const dismiss = window.setTimeout(() => setHintVisible(false), 3200);
+    return () => window.clearTimeout(dismiss);
+  }, [phase]);
+  // Dismiss early on the first relevant user action so the hint does
+  // not linger over the scene while the player is engaged.
+  useEffect(() => {
+    if (!hintVisible) return;
+    if (phase === "observing" && (crosshair.u !== 0.5 || crosshair.v !== 0.5)) {
+      setHintVisible(false);
+    }
+  }, [phase, crosshair.u, crosshair.v, hintVisible]);
+  useEffect(() => {
+    if (!hintVisible) return;
+    if (
+      phase === "scoped" &&
+      scopeEntry &&
+      (scopeReticle.u !== scopeEntry.u || scopeReticle.v !== scopeEntry.v)
+    ) {
+      setHintVisible(false);
+    }
+  }, [phase, scopeEntry, scopeReticle.u, scopeReticle.v, hintVisible]);
+  const hintCopy =
+    phase === "scoped" ? "移动寻找目标 · 左键射击" : "移动鼠标观察 · 右键开镜";
+
   // Lens position for rendering the scope frame and the reticle.
   const lens = useMemo(() => {
     if (phase !== "scoped" || !scopeEntry) return null;
@@ -555,8 +646,11 @@ export const SceneStage = ({
   // outside the scene rect.
   const scopeReticleScreen = useMemo(() => {
     if (!lens) return null;
-    return clampPointToLens(pointer.x, pointer.y, lens);
-  }, [lens, pointer.x, pointer.y]);
+    return clampPointToLens(pointerRef.current.x, pointerRef.current.y, lens);
+    // pointerTick is the React-side throttle; without including it,
+    // the memo would never recompute because the ref change does
+    // not invalidate it.
+  }, [lens, pointerTick]);
 
   // Compute the reticle's screen position for the current phase.
   const reticleScreen =
@@ -670,6 +764,15 @@ export const SceneStage = ({
       >
         <Reticle variant={reticleVariant} />
       </div>
+      {hintVisible && (phase === "observing" || phase === "scoped") && (
+        <div
+          className="onboarding-hint"
+          data-testid="onboarding-hint"
+          data-phase={phase}
+        >
+          {hintCopy}
+        </div>
+      )}
     </div>
   );
 };

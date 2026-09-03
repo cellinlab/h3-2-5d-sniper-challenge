@@ -245,6 +245,40 @@ button:disabled {
   transform: translate(-50%, 0);
 }
 
+.paused-banner {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: 7px 14px;
+  border: 1px solid rgba(220, 232, 248, 0.18);
+  background: rgba(3, 8, 15, 0.72);
+  color: rgba(220, 232, 248, 0.9);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* The paused overlay physically covers the scene stage with a
+ * higher z-index so its mousedown / contextmenu capture the
+ * resume gesture before the scene's gameplay handlers can see
+ * it. The dim background makes the pause state obvious without
+ * occluding the scene underneath. */
+.paused-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  background: rgba(2, 5, 10, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14%;
+  cursor: none;
+}
+
 .menu-screen {
   position: absolute;
   inset: 0;
@@ -437,5 +471,35 @@ button:disabled {
 }
 
 .crosshair-cursor {
-  cursor: crosshair;
+  /* The custom reticle is the only aim indicator during a round;
+   * hide the operating-system cursor so the player never sees two
+   * crosshairs. Start/result screens never mount this class, so
+   * their normal cursor is preserved. */
+  cursor: none;
+}
+
+.onboarding-hint {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(220, 232, 248, 0.78);
+  background: rgba(3, 8, 15, 0.55);
+  border: 1px solid rgba(220, 232, 248, 0.1);
+  pointer-events: none;
+  z-index: 5;
+  opacity: 0;
+  animation: onboarding-fade 3200ms ease forwards;
+}
+
+@keyframes onboarding-fade {
+  0%   { opacity: 0; }
+  10%  { opacity: 0.85; }
+  75%  { opacity: 0.85; }
+  100% { opacity: 0; }
 }

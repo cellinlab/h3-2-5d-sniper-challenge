@@ -78,7 +78,7 @@ export const StartScreen = ({ scenes, onStart, audioOn, onToggleAudio }: Props) 
           进入任务
         </button>
       </div>
-      <div className="menu-footer">MINIMAX CODE // H3 VIDEO // SPEECH 2.8</div>
+      <div className="menu-footer">MINIMAX CODE // H3 VIDEO // SPEECH 2.8 // MUSIC 3.0</div>
     </div>
   );
 };

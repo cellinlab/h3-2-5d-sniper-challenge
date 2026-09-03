@@ -11,16 +11,21 @@
 import { describe, expect, it } from "vitest";
 import {
   SCENE_ASPECT,
+  TARGET_SOURCE_ASPECT,
+  TARGET_SOURCE_HEIGHT,
+  TARGET_SOURCE_WIDTH,
   isMinimalVideoReady,
   isVideoReady,
   scopeSourceRect,
   selectMedia,
+  targetDrawRectFor,
   videoSourceRectForScene,
   VIDEO_DRAW_READY_STATE,
   type MinimalVideo,
 } from "../scene/videoSource";
 import type { NormalizedCoord, SceneConfig } from "../types/scene";
 import { fitSceneRect, lensRectForEntry, SCOPE_MAGNIFICATION } from "../state/coordinate";
+import { SCENE_PROTOCOL_VERSION } from "../types/scene";
 
 const makeVideo = (overrides: Partial<MinimalVideo> = {}): MinimalVideo => ({
   readyState: VIDEO_DRAW_READY_STATE,
@@ -30,6 +35,7 @@ const makeVideo = (overrides: Partial<MinimalVideo> = {}): MinimalVideo => ({
 });
 
 const makeScene = (overrides: Partial<SceneConfig> = {}): SceneConfig => ({
+  protocolVersion: SCENE_PROTOCOL_VERSION,
   id: "north-relay",
   title: "北境中继站",
   subtitle: "工业设施 · 蓝色时刻",
@@ -281,5 +287,82 @@ describe("scene media contract parity", () => {
     });
     const v = makeVideo();
     expect(selectMedia(scene, v as unknown as HTMLVideoElement).kind).toBe("video");
+  });
+});
+
+/**
+ * The shipped target sprite is a 1024x1536 portrait. The hit area
+ * (a wide ellipse when `hU > hV`) would stretch the figure sideways
+ * if we drew the PNG into the halfSize box directly. These tests pin
+ * the "contain" rect math so the sprite always keeps its real 2:3
+ * aspect ratio, the draw rect stays fully inside the hit box, and
+ * the hit area is unaffected (the player can still aim at the
+ * halfSize ellipse, not the visual).
+ */
+describe("targetDrawRectFor - aspect-preserving contain", () => {
+  const rect = fitSceneRect(1920, 1080);
+
+  it("exports the source dimensions as the single source of truth", () => {
+    expect(TARGET_SOURCE_WIDTH).toBe(1024);
+    expect(TARGET_SOURCE_HEIGHT).toBe(1536);
+    expect(TARGET_SOURCE_ASPECT).toBeCloseTo(1024 / 1536, 6);
+  });
+
+  it("preserves the 2:3 source aspect ratio for the shipped halfSize", () => {
+    // The shipped operative config: center (0.625, 0.7), halfSize (0.022, 0.032).
+    // The hit box is wider than tall (0.044 vs 0.064 in normalized units;
+    // 0.044*1920 = 84.48 wide vs 0.064*1080 = 69.12 tall in scene CSS px).
+    // The source 2:3 is taller than wide, so the contain rect is
+    // bounded by the box height and the figure sits narrower.
+    const r = targetDrawRectFor(
+      { u: 0.625, v: 0.7 },
+      { hU: 0.022, hV: 0.032 },
+      rect,
+    );
+    expect(r.w / r.h).toBeCloseTo(TARGET_SOURCE_ASPECT, 6);
+    // The rect must be fully inside the halfSize box.
+    const boxW = 0.022 * 2 * rect.w;
+    const boxH = 0.032 * 2 * rect.h;
+    expect(r.w).toBeLessThanOrEqual(boxW + 1e-6);
+    expect(r.h).toBeLessThanOrEqual(boxH + 1e-6);
+  });
+
+  it("centers the draw rect on the same scene center the hit ellipse uses", () => {
+    const center = { u: 0.5, v: 0.5 };
+    const halfSize = { hU: 0.1, hV: 0.05 };
+    const r = targetDrawRectFor(center, halfSize, rect);
+    expect(r.x + r.w / 2).toBeCloseTo(center.u * rect.w, 5);
+    expect(r.y + r.h / 2).toBeCloseTo(center.v * rect.h, 5);
+  });
+
+  it("scales up to fill the available box when the source matches the box aspect", () => {
+    // halfSize.hU = 0.05, hV = 0.075 -> box is 0.10 x 0.15 in scene
+    // units -> 192 x 270 in scene CSS px. 192/270 = 0.7111 ≈ 1024/1536
+    // (≈ 0.6667); since 0.7111 > 0.6667, the box is wider than the
+    // source. The contain rect should therefore be bounded by height:
+    // h = 270, w = 270 * 1024/1536 = 180.
+    const r = targetDrawRectFor(
+      { u: 0.5, v: 0.5 },
+      { hU: 0.05, hV: 0.075 },
+      rect,
+    );
+    expect(r.h).toBeCloseTo(0.075 * 2 * rect.h, 5);
+    expect(r.w).toBeCloseTo((0.075 * 2 * rect.h) * (TARGET_SOURCE_WIDTH / TARGET_SOURCE_HEIGHT), 5);
+    expect(r.w / r.h).toBeCloseTo(TARGET_SOURCE_ASPECT, 6);
+  });
+
+  it("returns zeros for an unmeasured scene rect", () => {
+    expect(
+      targetDrawRectFor({ u: 0.5, v: 0.5 }, { hU: 0.05, hV: 0.05 }, { w: 0, h: 0 }),
+    ).toEqual({ x: 0, y: 0, w: 0, h: 0 });
+  });
+
+  it("returns zeros for a non-positive halfSize", () => {
+    expect(
+      targetDrawRectFor({ u: 0.5, v: 0.5 }, { hU: 0, hV: 0.05 }, rect),
+    ).toEqual({ x: 0, y: 0, w: 0, h: 0 });
+    expect(
+      targetDrawRectFor({ u: 0.5, v: 0.5 }, { hU: 0.05, hV: 0 }, rect),
+    ).toEqual({ x: 0, y: 0, w: 0, h: 0 });
   });
 });

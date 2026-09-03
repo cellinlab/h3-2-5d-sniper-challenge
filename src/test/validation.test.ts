@@ -44,6 +44,15 @@ describe("validateSceneConfig - happy path", () => {
     });
     expect(r.ok).toBe(true);
   });
+
+  it("accepts a locked scene with zero targets", () => {
+    const r = validateSceneConfig({
+      ...baseConfig,
+      status: "locked",
+      targets: [],
+    });
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe("validateSceneConfig - protocol & top-level", () => {
@@ -63,6 +72,19 @@ describe("validateSceneConfig - protocol & top-level", () => {
     if (!r.ok) {
       expect(r.errors.some((e) => e.includes("protocolVersion"))).toBe(true);
     }
+  });
+
+  it("rejects a non-integer protocolVersion", () => {
+    const r = validateSceneConfig({ ...baseConfig, protocolVersion: 1.5 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors.some((e) => e.includes("integer"))).toBe(true);
+    }
+  });
+
+  it("rejects a string protocolVersion", () => {
+    const r = validateSceneConfig({ ...baseConfig, protocolVersion: "1" });
+    expect(r.ok).toBe(false);
   });
 
   it("rejects unknown top-level keys", () => {
@@ -95,12 +117,20 @@ describe("validateSceneConfig - grid", () => {
 });
 
 describe("validateSceneConfig - targets", () => {
-  it("rejects empty target arrays", () => {
-    const r = validateSceneConfig({ ...baseConfig, targets: [] });
+  it("rejects empty target arrays on an active scene", () => {
+    const r = validateSceneConfig({ ...baseConfig, status: "active", targets: [] });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.errors.some((e) => e.includes("at least one"))).toBe(true);
     }
+  });
+
+  it("rejects empty target arrays on a scene with no status (defaults to active)", () => {
+    // No `status` field means the scene is implicitly active and
+    // therefore must declare a target. Locked teaser scenes are the
+    // only place that may ship with zero targets.
+    const r = validateSceneConfig({ ...baseConfig, targets: [] });
+    expect(r.ok).toBe(false);
   });
 
   it("rejects target coords outside [0, 1]", () => {
@@ -260,5 +290,40 @@ describe("isCoordOutOfBounds", () => {
   it("accepts in-range values", () => {
     expect(isCoordOutOfBounds({ u: 0, v: 0 })).toBe(false);
     expect(isCoordOutOfBounds({ u: 1, v: 1 })).toBe(false);
+  });
+});
+
+/**
+ * The shipped scene manifest must round-trip through the validator
+ * cleanly. A regression here would mean the production SCENES list
+ * no longer matches the protocol — every SceneConfig in the world
+ * would then fail at module load.
+ */
+describe("runtime SCENES export", () => {
+  it("the shipped SCENES all pass validateSceneConfig", async () => {
+    const { SCENES } = await import("../scenes/sceneConfig");
+    expect(SCENES.length).toBeGreaterThan(0);
+    for (const scene of SCENES) {
+      const r = validateSceneConfig(scene);
+      expect(r.ok, `scene ${scene.id} should validate; errors=${r.ok ? [] : r.errors.join("; ")}`).toBe(true);
+    }
+  });
+
+  it("the active scene has a target and the locked teasers may have zero", async () => {
+    const { SCENES } = await import("../scenes/sceneConfig");
+    const active = SCENES.filter((s) => s.status === "active");
+    const locked = SCENES.filter((s) => s.status === "locked");
+    expect(active.length).toBeGreaterThan(0);
+    for (const s of active) {
+      expect(s.targets.length, `active scene ${s.id} should have at least one target`).toBeGreaterThan(0);
+    }
+    // locked teasers can be zero — we just require that any scene
+    // with zero targets carries status === "locked".
+    for (const s of SCENES) {
+      if (s.targets.length === 0) {
+        expect(s.status).toBe("locked");
+      }
+    }
+    expect(locked.length).toBeGreaterThan(0);
   });
 });
