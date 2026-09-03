@@ -91,6 +91,12 @@ type SceneConfigBase = {
   subtitle: string;
   /** Top-left HUD line e.g. "SECTOR 07 // BLUE HOUR" */
   sectorLabel: string;
+  /** Optional on-card provenance / mode badge. */
+  badgeLabel?: string;
+  /** Optional scene-specific visible briefing copy. */
+  briefingText?: string;
+  /** Optional scene-specific visible scope instruction. */
+  scopeOpenText?: string;
   /** Master scene media contract. A scene either draws a procedural
    *  background (e.g. while a generated master is being produced) or
    *  binds to a fixed-camera 16:9 video that drives both the wide

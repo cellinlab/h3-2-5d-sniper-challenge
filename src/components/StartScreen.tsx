@@ -41,8 +41,8 @@ const HERO_IMAGE = "/generated/menu-hero-tactical-v2.png";
 
 /**
  * Card art per scene. The H3 main mission and the H2.3 practice
- * range use real stills extracted from their generated plates.
- * The two locked teaser scenes use their concept plates. The
+ * range and the two H2.3 field missions use real stills extracted
+ * from their generated plates. The
  * "card-01" / "card-02" etc. labels below are the on-card
  * numeric tags; they live with the data so a future re-order
  * of SCENES does not change the visible numbering.
@@ -50,8 +50,8 @@ const HERO_IMAGE = "/generated/menu-hero-tactical-v2.png";
 const SCENE_CARD_ART: Readonly<Record<string, string>> = {
   "north-relay": "/generated/menu-scene-north.jpg",
   "rainforest-practice": "/generated/menu-scene-rainforest.jpg",
-  "black-rain-port": "/generated/menu-scene-black-rain.png",
-  "morning-observatory": "/generated/menu-scene-observatory.png",
+  "urban-rooftop": "/generated/menu-scene-urban.jpg",
+  "airport-arrival": "/generated/menu-scene-airport.jpg",
 };
 
 const FALLBACK_ART = HERO_IMAGE;
@@ -64,8 +64,8 @@ type CardTag = "01" | "02" | "03" | "04";
 const CARD_TAGS: Readonly<Record<string, CardTag>> = {
   "north-relay": "01",
   "rainforest-practice": "02",
-  "black-rain-port": "03",
-  "morning-observatory": "04",
+  "urban-rooftop": "03",
+  "airport-arrival": "04",
 };
 
 const cardTagFor = (id: string): CardTag => CARD_TAGS[id] ?? "01";
@@ -86,7 +86,8 @@ const ctaCopyFor = (scene: SceneConfig): string => {
 const ariaLabelFor = (scene: SceneConfig): string => {
   const tag = cardTagFor(scene.id);
   const locked = scene.status === "locked" ? "，待解锁" : "";
-  const kind = scene.ruleMode === "untimed-practice" ? "H2.3 自由练习" : "H3 主任务";
+  const kind = scene.badgeLabel ??
+    (scene.ruleMode === "untimed-practice" ? "H2.3 自由练习" : "限时任务");
   return `${tag} 号卡：${scene.title}，${kind}${locked}`;
 };
 
@@ -179,7 +180,7 @@ export const StartScreen = ({ scenes, onStart, audioOn, onToggleAudio }: Props) 
             START &nbsp;·&nbsp; SCENE SELECTION
           </div>
           <p className="menu-pitch" data-testid="menu-pitch">
-            选择一个任务剖面：主任务限时单发；雨林前哨为不限时多目标练习。右键开镜，鼠标瞄准，左键射击。
+            四个可玩场景：三组限时单发任务，一组不限时多目标练习。右键开镜，鼠标瞄准，左键射击。
           </p>
         </header>
 
@@ -215,9 +216,10 @@ export const StartScreen = ({ scenes, onStart, audioOn, onToggleAudio }: Props) 
               <span className="card-status">
                 {primary.status === "locked"
                   ? "待解锁"
-                  : primary.ruleMode === "untimed-practice"
-                    ? "FREE PRACTICE · H2.3"
-                    : "H3 MAIN MISSION"}
+                  : primary.badgeLabel ??
+                    (primary.ruleMode === "untimed-practice"
+                      ? "FREE PRACTICE · H2.3"
+                      : "FIELD MISSION")}
               </span>
             </span>
             <span className="card-energy" aria-hidden />
@@ -255,9 +257,10 @@ export const StartScreen = ({ scenes, onStart, audioOn, onToggleAudio }: Props) 
                   <span className="card-status">
                     {scene.status === "locked"
                       ? "待解锁"
-                      : scene.ruleMode === "untimed-practice"
-                        ? "FREE PRACTICE · H2.3"
-                        : "H3 MAIN MISSION"}
+                      : scene.badgeLabel ??
+                        (scene.ruleMode === "untimed-practice"
+                          ? "FREE PRACTICE · H2.3"
+                          : "FIELD MISSION")}
                   </span>
                 </span>
                 <span className="card-energy" aria-hidden />

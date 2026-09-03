@@ -398,7 +398,7 @@ describe("runtime SCENES export", () => {
     }
   });
 
-  it("the active scene has a target and the locked teasers may have zero", async () => {
+  it("every shipped scene is playable and carries at least one target", async () => {
     const { SCENES } = await import("../scenes/sceneConfig");
     const active = SCENES.filter((s) => s.status === "active");
     const locked = SCENES.filter((s) => s.status === "locked");
@@ -406,13 +406,15 @@ describe("runtime SCENES export", () => {
     for (const s of active) {
       expect(s.targets.length, `active scene ${s.id} should have at least one target`).toBeGreaterThan(0);
     }
-    // locked teasers can be zero — we just require that any scene
-    // with zero targets carries status === "locked".
+    // A future teaser may be locked with zero targets, but the
+    // current four-card recording build intentionally ships no
+    // locked placeholders.
     for (const s of SCENES) {
       if (s.targets.length === 0) {
         expect(s.status).toBe("locked");
       }
     }
-    expect(locked.length).toBeGreaterThan(0);
+    expect(active).toHaveLength(4);
+    expect(locked).toHaveLength(0);
   });
 });

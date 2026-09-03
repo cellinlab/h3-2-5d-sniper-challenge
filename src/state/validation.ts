@@ -33,6 +33,9 @@ const ALLOWED_SCENE_KEYS: ReadonlySet<string> = new Set([
   "title",
   "subtitle",
   "sectorLabel",
+  "badgeLabel",
+  "briefingText",
+  "scopeOpenText",
   "masterMedia",
   "grid",
   "detailTiles",
@@ -155,6 +158,15 @@ export function validateSceneConfig(raw: unknown): ValidationResult {
   if (!isString(raw.title)) errors.push("scene.title must be a non-empty string");
   if (!isString(raw.subtitle)) errors.push("scene.subtitle must be a non-empty string");
   if (!isString(raw.sectorLabel)) errors.push("scene.sectorLabel must be a non-empty string");
+  if (!isOptionalString(raw.badgeLabel)) {
+    errors.push("scene.badgeLabel must be a string when present");
+  }
+  if (!isOptionalString(raw.briefingText)) {
+    errors.push("scene.briefingText must be a string when present");
+  }
+  if (!isOptionalString(raw.scopeOpenText)) {
+    errors.push("scene.scopeOpenText must be a string when present");
+  }
   validateMasterMedia(raw.masterMedia, "scene.masterMedia", errors);
 
   // grid: 4 x 3

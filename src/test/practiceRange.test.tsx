@@ -75,6 +75,45 @@ describe("StartScreen - H3 main mission vs H2.3 practice range", () => {
     expect(mission.textContent ?? "").not.toContain("FREE PRACTICE");
   });
 
+  it("ships both H2.3 field missions as selectable cards with honest model labels", () => {
+    render(
+      <StartScreen
+        scenes={SCENES}
+        onStart={() => undefined}
+        audioOn
+        onToggleAudio={() => undefined}
+      />,
+    );
+
+    for (const id of ["urban-rooftop", "airport-arrival"]) {
+      const card = screen.getByTestId(`scene-card-${id}`);
+      expect(card).toHaveAttribute("data-locked", "false");
+      expect(card).toHaveAttribute("data-rule-mode", "timed-mission");
+      expect(card.textContent ?? "").toContain("H2.3 FIELD MISSION");
+      expect(card.textContent ?? "").not.toContain("H3");
+      expect(card).not.toBeDisabled();
+    }
+  });
+
+  it("gives every new field mission its own generated plate, target, radio voice, and music", () => {
+    const fieldScenes = SCENES.filter((scene) =>
+      ["urban-rooftop", "airport-arrival"].includes(scene.id),
+    );
+    expect(fieldScenes).toHaveLength(2);
+
+    for (const scene of fieldScenes) {
+      expect(scene.status).toBe("active");
+      expect(scene.masterMedia.kind).toBe("video");
+      if (scene.masterMedia.kind === "video") {
+        expect(scene.masterMedia.src).toMatch(/(urban-rooftop|airport-arrival)-h23/);
+      }
+      expect(scene.targets).toHaveLength(1);
+      expect(scene.targets[0]?.artPath).toMatch(/target-(urban|airport)-/);
+      expect(scene.audio.voice.scopeOpen).toContain("voice-radio-scope.mp3");
+      expect(scene.audio.music).toBe("/generated/audio/music-overwatch-protocol.mp3");
+    }
+  });
+
   it("only the practice card carries the .practice modifier class", () => {
     render(
       <StartScreen

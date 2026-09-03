@@ -397,7 +397,7 @@ export const App = () => {
     if (opening === "retry") {
       announce("重新建立观察。", s.audio.voice.retry);
     } else {
-      announce("观察区域，确认目标。", s.audio.voice.briefing);
+      announce(s.briefingText ?? "观察区域，确认目标。", s.audio.voice.briefing);
     }
   }, [announce]);
 
@@ -455,7 +455,9 @@ export const App = () => {
           sceneCoordAtPointer ?? round.crosshair;
         dispatch({ type: "ENTER_SCOPE", at: clampCoord(entry) });
         playCue("scope");
-        if (scene) announce("保持呼吸。", scene.audio.voice.scopeOpen);
+        if (scene) {
+          announce(scene.scopeOpenText ?? "保持呼吸。", scene.audio.voice.scopeOpen);
+        }
       } else if (round.phase === "scoped") {
         exitScope();
         playCue("scope");

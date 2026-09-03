@@ -559,6 +559,52 @@ export const playCue = (cue: SoundCue): void => {
   }
 };
 
+/**
+ * Short encrypted-radio gate that sits immediately before the
+ * effect-treated Speech 2.8 files. It is synthesized locally so it
+ * follows the global mute state and does not add another downloaded
+ * asset. A narrow noise burst plus a falling confirmation tone reads
+ * as a comms channel opening without masking the Mandarin line.
+ */
+const playRadioGate = (): void => {
+  if (externalMuted) return;
+  const c = ensureRunning();
+  if (!c || !masterGain) return;
+  const start = now();
+  const noiseBuffer = c.createBuffer(1, Math.floor(c.sampleRate * 0.12), c.sampleRate);
+  const samples = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < samples.length; i += 1) {
+    const envelope = Math.exp(-(i / samples.length) * 7);
+    samples[i] = (Math.random() * 2 - 1) * envelope;
+  }
+  const noise = c.createBufferSource();
+  noise.buffer = noiseBuffer;
+  const band = c.createBiquadFilter();
+  band.type = "bandpass";
+  band.frequency.value = 1850;
+  band.Q.value = 1.6;
+  const noiseGain = c.createGain();
+  noiseGain.gain.setValueAtTime(0.11, start);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
+  noise.connect(band);
+  band.connect(noiseGain);
+  noiseGain.connect(masterGain);
+  noise.start(start);
+  noise.stop(start + 0.13);
+
+  const tone = c.createOscillator();
+  const toneGain = c.createGain();
+  tone.type = "square";
+  tone.frequency.setValueAtTime(1680, start);
+  tone.frequency.exponentialRampToValueAtTime(980, start + 0.09);
+  toneGain.gain.setValueAtTime(0.065, start);
+  toneGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.1);
+  tone.connect(toneGain);
+  toneGain.connect(masterGain);
+  tone.start(start);
+  tone.stop(start + 0.11);
+};
+
 const getVoice = (src: string): HTMLAudioElement | null => {
   if (typeof Audio === "undefined") return null;
   const cached = voiceCache.get(src);
@@ -806,6 +852,7 @@ export const playVoice = (src: string | undefined): void => {
   if (!src || externalMuted) return;
   const voice = getVoice(src);
   if (!voice) return;
+  if (src.includes("voice-radio-")) playRadioGate();
   voiceToken += 1;
   const myToken = voiceToken;
   duckForSpeech();

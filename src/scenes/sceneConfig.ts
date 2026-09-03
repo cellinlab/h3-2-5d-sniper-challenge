@@ -4,9 +4,8 @@
  * The protocolVersion field is required; validateSceneConfig enforces
  * it. Scene 01 uses a local H3 master MP4 that drives
  * both the wide observation view and the magnified scope view. The
- * other two cards are marked `locked` so they render as `待解锁`
- * instead of pretending their media exists; they keep the procedural
- * fallback so the manifest is still playable in isolation.
+ * two additional H2.3 plates extend the shipped mission set with
+ * urban-rooftop and airport high-vantage observation scenes.
  *
  * The practice scene (rainforest-practice) uses an H2.3 6s 768P
  * plate, has three targets that sit on real landmarks on the
@@ -27,6 +26,9 @@ const NORTH_RELAY: SceneConfig = {
   title: "北境中继站",
   subtitle: "工业设施 · 蓝色时刻",
   sectorLabel: "SECTOR 07 // BLUE HOUR",
+  badgeLabel: "H3 MAIN MISSION",
+  briefingText: "观察区域，确认目标。",
+  scopeOpenText: "保持呼吸。",
   // The generated H3 MP4 stays in ignored /public/generated. Wide
   // and scope canvases read the same HTMLVideoElement each frame.
   masterMedia: {
@@ -78,6 +80,9 @@ const RAINFOREST_PRACTICE: SceneConfig = {
   // "FREE PRACTICE / H2.3" (see StartScreen); the sector line
   // is the in-game HUD copy.
   sectorLabel: "SECTOR 22 // H2.3 PRACTICE",
+  badgeLabel: "FREE PRACTICE · H2.3",
+  briefingText: "自由练习。清除全部目标。",
+  scopeOpenText: "保持呼吸。",
   masterMedia: {
     kind: "video",
     src: "/generated/rainforest-practice-h23-6s-768p.mp4",
@@ -132,51 +137,104 @@ const RAINFOREST_PRACTICE: SceneConfig = {
   status: "active",
 };
 
-const BLACK_RAIN_PORT: SceneConfig = {
+const URBAN_ROOFTOP: SceneConfig = {
   protocolVersion: SCENE_PROTOCOL_VERSION,
-  id: "black-rain-port",
-  title: "黑雨集装港",
-  subtitle: "港口码头 · 暴雨夜",
-  sectorLabel: "SECTOR 12 // BLACK RAIN",
-  masterMedia: { kind: "procedural" },
+  id: "urban-rooftop",
+  title: "城市天际线",
+  subtitle: "摩天楼顶 · 雨后步行街",
+  sectorLabel: "SECTOR 31 // CITY OVERWATCH",
+  badgeLabel: "H2.3 FIELD MISSION",
+  briefingText: "城市视野建立。锁定黄衣、青色挎包的目标。",
+  scopeOpenText: "稳住。听心跳。",
+  masterMedia: {
+    kind: "video",
+    src: "/generated/urban-rooftop-h23-6s-768p.mp4",
+    loop: true,
+  },
   grid: { cols: 4, rows: 3 },
   ruleMode: "timed-mission",
-  targets: [],
+  targets: [
+    {
+      id: "urban-courier",
+      // Calibrated against the delivered H2.3 plate: the courier
+      // stands on the open central plaza, at the same distant scale
+      // as the native pedestrians. The yellow coat reads as a clue
+      // at 1× while the 2.6× optical crop reveals the bag and face.
+      center: { u: 0.5, v: 0.66 },
+      halfSize: { hU: 0.013, hV: 0.028 },
+      artPath: "/generated/target-urban-courier.png",
+      distanceMeters: 438,
+    },
+  ],
   audio: {
-    voice: {},
-    music: null,
+    voice: {
+      briefing: "/generated/audio/voice-radio-urbanBriefing.mp3",
+      scopeOpen: "/generated/audio/voice-radio-scope.mp3",
+      warning: "/generated/audio/voice-radio-warning.mp3",
+      finalWarning: "/generated/audio/voice-radio-finalWarning.mp3",
+      success: "/generated/audio/voice-radio-success.mp3",
+      failure: "/generated/audio/voice-radio-failure.mp3",
+      retry: "/generated/audio/voice-radio-retry.mp3",
+    },
+    music: "/generated/audio/music-overwatch-protocol.mp3",
   },
-  roundBudgetMs: 22000,
-  warningAt: 0.55,
-  finalWarningAt: 0.85,
-  status: "locked",
+  roundBudgetMs: 26000,
+  warningAt: 0.6,
+  finalWarningAt: 0.86,
+  status: "active",
 };
 
-const MORNING_OBSERVATORY: SceneConfig = {
+const AIRPORT_ARRIVAL: SceneConfig = {
   protocolVersion: SCENE_PROTOCOL_VERSION,
-  id: "morning-observatory",
-  title: "晨曦天文台",
-  subtitle: "沙漠高地 · 黎明",
-  sectorLabel: "SECTOR 19 // DAWN RIDGE",
-  masterMedia: { kind: "procedural" },
+  id: "airport-arrival",
+  title: "机场到达区",
+  subtitle: "塔台制高点 · 暮色停机坪",
+  sectorLabel: "SECTOR 44 // APRON ARRIVAL",
+  badgeLabel: "H2.3 FIELD MISSION",
+  briefingText: "航站区接管。锁定红衣、青色行李的目标。",
+  scopeOpenText: "稳住。听心跳。",
+  masterMedia: {
+    kind: "video",
+    src: "/generated/airport-arrival-h23-6s-768p.mp4",
+    loop: true,
+  },
   grid: { cols: 4, rows: 3 },
   ruleMode: "timed-mission",
-  targets: [],
+  targets: [
+    {
+      id: "airport-traveler",
+      // The traveler joins the deplaning flow beside the yellow
+      // apron lane. Her sprite scale matches the nearby passengers
+      // while the red coat and cyan case remain a fair visual clue.
+      center: { u: 0.67, v: 0.63 },
+      halfSize: { hU: 0.023, hV: 0.047 },
+      artPath: "/generated/target-airport-traveler.png",
+      distanceMeters: 521,
+    },
+  ],
   audio: {
-    voice: {},
-    music: null,
+    voice: {
+      briefing: "/generated/audio/voice-radio-airportBriefing.mp3",
+      scopeOpen: "/generated/audio/voice-radio-scope.mp3",
+      warning: "/generated/audio/voice-radio-warning.mp3",
+      finalWarning: "/generated/audio/voice-radio-finalWarning.mp3",
+      success: "/generated/audio/voice-radio-success.mp3",
+      failure: "/generated/audio/voice-radio-failure.mp3",
+      retry: "/generated/audio/voice-radio-retry.mp3",
+    },
+    music: "/generated/audio/music-overwatch-protocol.mp3",
   },
-  roundBudgetMs: 22000,
-  warningAt: 0.55,
-  finalWarningAt: 0.85,
-  status: "locked",
+  roundBudgetMs: 26000,
+  warningAt: 0.6,
+  finalWarningAt: 0.86,
+  status: "active",
 };
 
 export const SCENES: ReadonlyArray<SceneConfig> = [
   NORTH_RELAY,
   RAINFOREST_PRACTICE,
-  BLACK_RAIN_PORT,
-  MORNING_OBSERVATORY,
+  URBAN_ROOFTOP,
+  AIRPORT_ARRIVAL,
 ];
 
 /**
