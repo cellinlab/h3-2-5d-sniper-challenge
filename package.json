@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "media:minimax:speech": "node scripts/generate-minimax-audio.mjs speech",
+    "media:minimax:radio": "node scripts/generate-minimax-audio.mjs radio",
     "media:minimax:music": "node scripts/generate-minimax-audio.mjs music",
     "media:minimax:all": "node scripts/generate-minimax-audio.mjs all"
   },
