@@ -160,6 +160,7 @@ vite.config.ts.timestamp-*
 # Local captures and provider outputs
 captures/
 recordings/
+screenshots/
 public/media/
 public/audio/
 public/generated/
