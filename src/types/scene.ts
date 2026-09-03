@@ -65,7 +65,19 @@ export type MasterMedia =
       loop?: boolean;
     };
 
-export type SceneConfig = {
+/**
+ * Rule mode discriminant. The two rule sets are structurally
+ * different: a timed mission has a 22-second hidden budget,
+ * danger escalation, heartbeat, and exactly one shot; an untimed
+ * practice range has no timer, no danger, and a hit removes one
+ * target then returns the player to wide observation. The mode
+ * is encoded in the public type so a future refactor cannot
+ * scatter scene-id checks through components.
+ */
+export type RuleMode = "timed-mission" | "untimed-practice";
+
+/** Fields every scene manifest must carry. */
+type SceneConfigBase = {
   /**
    * Protocol version of the scene manifest. The runtime validator
    * compares it against `SCENE_PROTOCOL_VERSION`; a missing or
@@ -92,14 +104,39 @@ export type SceneConfig = {
   targets: TargetPlacement[];
   /** Audio configuration. */
   audio: SceneAudio;
+  /** Free-form flag. Only "locked" is recognized; unknown values fail. */
+  status?: "active" | "locked";
+};
+
+/**
+ * Timed one-shot mission scene. The 22-second hidden budget,
+ * danger escalation, and exactly-one-shot semantics are
+ * structurally encoded: the timing fields are required and
+ * the state machine's FIRE reducer branch is the only path
+ * that resolves the round.
+ */
+export type TimedMissionSceneConfig = SceneConfigBase & {
+  ruleMode: "timed-mission";
   /** Total round budget in ms. The HUD never shows a number. */
   roundBudgetMs: number;
   /** When the first danger copy becomes visible, in [0, 1] of round budget. */
   warningAt: number;
   /** When the second danger copy becomes visible, in [0, 1] of round budget. */
   finalWarningAt: number;
-  /** Free-form flag. Only "locked" is recognized; unknown values fail. */
-  status?: "active" | "locked";
 };
+
+/**
+ * Untimed elimination practice scene. No countdown, no danger
+ * escalation, no heartbeat, multiple shots allowed; each hit
+ * removes the cleared target from the live set and the round
+ * resolves only when all target ids have been hit. The type
+ * system forbids the timed-mission timing fields here.
+ */
+export type UntimedPracticeSceneConfig = SceneConfigBase & {
+  ruleMode: "untimed-practice";
+};
+
+/** Public union. The discriminant is `ruleMode`. */
+export type SceneConfig = TimedMissionSceneConfig | UntimedPracticeSceneConfig;
 
 export const SCENE_PROTOCOL_VERSION = 1 as const;

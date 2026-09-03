@@ -6,9 +6,21 @@
  * and only ever advances one step at a time. Trying to perform
  * an action that is not legal in the current state throws, which
  * keeps the caller honest and makes bugs easy to find.
+ *
+ * Two rule modes
+ * --------------
+ * `ruleMode` is set on `START_OBSERVATION` and stays immutable
+ * for the rest of the round. It controls:
+ *   - the FIRE reducer branch (one-shot vs. multi-shot elimination)
+ *   - whether the orchestrator dispatches TICK events
+ *   - whether the HUD shows a danger edge
+ *
+ * A timed-mission round always resolves after exactly one shot
+ * (or the 22-second timeout). An untimed-practice round ignores
+ * time and only resolves when all target ids have been hit.
  */
 
-import type { NormalizedCoord } from "../types/scene";
+import type { NormalizedCoord, RuleMode } from "../types/scene";
 
 export type RoundPhase =
   | "idle"
@@ -23,6 +35,9 @@ export type DangerLevel = "calm" | "warning" | "final";
 export type RoundState = {
   phase: RoundPhase;
   sceneId: string | null;
+  /** Which rule set this round is running under. Immutable after
+   *  START_OBSERVATION. */
+  ruleMode: RuleMode;
   /** Crosshair position while in the wide view. */
   crosshair: NormalizedCoord;
   /** Crosshair position captured at the moment the scope opened. */
@@ -31,12 +46,25 @@ export type RoundState = {
   scopeReticle: NormalizedCoord;
   /** Elapsed wall-clock time since observing started, in ms. */
   elapsedMs: number;
-  /** Current danger level based on elapsed vs warningAt / finalWarningAt. */
+  /** Current danger level based on elapsed vs warningAt / finalWarningAt.
+   *  Always "calm" for untimed-practice rounds. */
   danger: DangerLevel;
-  /** Has the player fired their single shot? */
+  /** Has the player fired their single shot? (timed-mission only) */
   hasFired: boolean;
-  /** Whether the single shot landed on a target. */
+  /** Whether the single shot landed on a target. (timed-mission only) */
   hitTargetId: string | null;
+  /** Total number of targets on the active scene. Set on
+   *  START_OBSERVATION so the FIRE reducer can check
+   *  "all targets cleared" without scene access. */
+  targetCount: number;
+  /** Target ids that have been cleared in this practice round. A
+   *  cleared target is no longer hittable and is hidden by the
+   *  renderer. Always empty for timed-mission rounds. */
+  clearedTargetIds: string[];
+  /** Total shots the player has fired. (untimed-practice only) */
+  shotCount: number;
+  /** Successful hits in this practice round. (untimed-practice only) */
+  hitCount: number;
   /**
    * Wall-clock ms at which the round was paused (via the
    * `visibilitychange` listener), or null when not paused. A
@@ -52,6 +80,7 @@ export type RoundState = {
 export const INITIAL_ROUND_STATE: RoundState = {
   phase: "idle",
   sceneId: null,
+  ruleMode: "timed-mission",
   crosshair: { u: 0.5, v: 0.5 },
   scopeEntry: null,
   scopeReticle: { u: 0.5, v: 0.5 },
@@ -59,12 +88,22 @@ export const INITIAL_ROUND_STATE: RoundState = {
   danger: "calm",
   hasFired: false,
   hitTargetId: null,
+  targetCount: 0,
+  clearedTargetIds: [],
+  shotCount: 0,
+  hitCount: 0,
   pausedAtMs: null,
   lastEvent: "",
 };
 
 export type RoundEvent =
-  | { type: "START_OBSERVATION"; sceneId: string; crosshair: NormalizedCoord }
+  | {
+      type: "START_OBSERVATION";
+      sceneId: string;
+      crosshair: NormalizedCoord;
+      ruleMode: RuleMode;
+      targetCount: number;
+    }
   | { type: "MOVE_CROSSHAIR"; crosshair: NormalizedCoord }
   | { type: "ENTER_SCOPE"; at: NormalizedCoord }
   | { type: "EXIT_SCOPE" }
@@ -141,6 +180,8 @@ export function reduceRound(state: RoundState, event: RoundEvent): RoundState {
         ...INITIAL_ROUND_STATE,
         phase: "observing",
         sceneId: event.sceneId,
+        ruleMode: event.ruleMode,
+        targetCount: event.targetCount,
         crosshair: event.crosshair,
         scopeReticle: event.crosshair,
         lastEvent: "scope_opening",
@@ -180,14 +221,56 @@ export function reduceRound(state: RoundState, event: RoundEvent): RoundState {
 
     case "FIRE": {
       assert(state.phase === "scoped", `FIRE requires scoped (got ${state.phase})`);
-      assert(!state.hasFired, "FIRE called after hasFired is already true");
-      const phase: RoundPhase = event.hitTargetId ? "success" : "failure";
+      if (state.ruleMode === "timed-mission") {
+        assert(!state.hasFired, "FIRE called after hasFired is already true");
+        const phase: RoundPhase = event.hitTargetId ? "success" : "failure";
+        return {
+          ...state,
+          phase,
+          hasFired: true,
+          hitTargetId: event.hitTargetId,
+          lastEvent: event.hitTargetId ? "hit" : "miss",
+        };
+      }
+      // untimed-practice: every fire consumes a shot; a hit adds
+      // the target id to the cleared set, returns the player to
+      // wide observation, and resolves the round only when the
+      // cleared set covers every target id on the scene. The
+      // cleared list is deduplicated so a defensive App-level
+      // re-fire cannot double-count a target.
+      const cleared = event.hitTargetId
+        ? state.clearedTargetIds.includes(event.hitTargetId)
+          ? state.clearedTargetIds
+          : [...state.clearedTargetIds, event.hitTargetId]
+        : state.clearedTargetIds;
+      const newHitCount = state.hitCount + (event.hitTargetId ? 1 : 0);
+      const newShotCount = state.shotCount + 1;
+      if (event.hitTargetId && state.targetCount > 0 && cleared.length >= state.targetCount) {
+        return {
+          ...state,
+          phase: "success",
+          clearedTargetIds: cleared,
+          hitCount: newHitCount,
+          shotCount: newShotCount,
+          lastEvent: "all_cleared",
+        };
+      }
+      if (event.hitTargetId) {
+        return {
+          ...state,
+          phase: "observing",
+          scopeEntry: null,
+          scopeReticle: state.crosshair,
+          clearedTargetIds: cleared,
+          hitCount: newHitCount,
+          shotCount: newShotCount,
+          lastEvent: "cleared",
+        };
+      }
       return {
         ...state,
-        phase,
-        hasFired: true,
-        hitTargetId: event.hitTargetId,
-        lastEvent: event.hitTargetId ? "hit" : "miss",
+        shotCount: newShotCount,
+        lastEvent: "miss",
       };
     }
 
@@ -246,8 +329,19 @@ export function reduceRound(state: RoundState, event: RoundEvent): RoundState {
 }
 
 /** Convenience helper for tests and components. */
-export function startObservation(sceneId: string, crosshair: NormalizedCoord): RoundState {
-  return reduceRound(INITIAL_ROUND_STATE, { type: "START_OBSERVATION", sceneId, crosshair });
+export function startObservation(
+  sceneId: string,
+  crosshair: NormalizedCoord,
+  ruleMode: RuleMode = "timed-mission",
+  targetCount = 0,
+): RoundState {
+  return reduceRound(INITIAL_ROUND_STATE, {
+    type: "START_OBSERVATION",
+    sceneId,
+    crosshair,
+    ruleMode,
+    targetCount,
+  });
 }
 
 /**

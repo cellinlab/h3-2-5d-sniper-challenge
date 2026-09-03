@@ -7,6 +7,15 @@
  * other two cards are marked `locked` so they render as `待解锁`
  * instead of pretending their media exists; they keep the procedural
  * fallback so the manifest is still playable in isolation.
+ *
+ * The practice scene (rainforest-practice) uses an H2.3 6s 768P
+ * plate, has three targets that sit on real landmarks on the
+ * generated plate, and runs under the untimed-practice rule mode.
+ * Target art paths are scene-specific PNGs (binoculars / radio /
+ * guard) so each silhouette reads correctly in scope view. The
+ * practice scene shares the same H3 generated music bed as the
+ * main mission; the speech ducking layer keeps voice lines
+ * intelligible over the music.
  */
 
 import { SCENE_PROTOCOL_VERSION, type SceneConfig } from "../types/scene";
@@ -26,6 +35,7 @@ const NORTH_RELAY: SceneConfig = {
     loop: true,
   },
   grid: { cols: 4, rows: 3 },
+  ruleMode: "timed-mission",
   targets: [
     {
       id: "operative-01",
@@ -58,6 +68,70 @@ const NORTH_RELAY: SceneConfig = {
   status: "active",
 };
 
+const RAINFOREST_PRACTICE: SceneConfig = {
+  protocolVersion: SCENE_PROTOCOL_VERSION,
+  id: "rainforest-practice",
+  title: "热带雨林练习场",
+  subtitle: "雨林前哨 · 自由练习",
+  // The H2.3 plate is intentionally labeled so it cannot be
+  // confused with the H3 main mission. The card itself says
+  // "FREE PRACTICE / H2.3" (see StartScreen); the sector line
+  // is the in-game HUD copy.
+  sectorLabel: "SECTOR 22 // H2.3 PRACTICE",
+  masterMedia: {
+    kind: "video",
+    src: "/generated/rainforest-practice-h23-6s-768p.mp4",
+    loop: true,
+  },
+  grid: { cols: 4, rows: 3 },
+  ruleMode: "untimed-practice",
+  // Real landmarks on the generated H2.3 plate. The halfSize is
+  // slightly taller than the H3 mission's because the practice
+  // scope reads the figures at 2.6× magnification and the art is
+  // a tight 2:3 portrait; the wider v-extent makes a head-and-
+  // shoulders silhouette read correctly without being missed.
+  targets: [
+    {
+      id: "operative-watchtower",
+      center: { u: 0.198, v: 0.658 },
+      halfSize: { hU: 0.022, hV: 0.040 },
+      artPath: "/generated/target-rainforest-binoculars.png",
+      distanceMeters: 240,
+    },
+    {
+      id: "operative-platform",
+      center: { u: 0.473, v: 0.736 },
+      halfSize: { hU: 0.022, hV: 0.040 },
+      artPath: "/generated/target-rainforest-radio.png",
+      distanceMeters: 260,
+    },
+    {
+      id: "operative-cabin",
+      center: { u: 0.769, v: 0.279 },
+      halfSize: { hU: 0.022, hV: 0.040 },
+      artPath: "/generated/target-rainforest-guard.png",
+      distanceMeters: 250,
+    },
+  ],
+  audio: {
+    voice: {
+      briefing: "/generated/audio/voice-briefing.mp3",
+      scopeOpen: "/generated/audio/voice-scopeOpen.mp3",
+      success: "/generated/audio/voice-success.mp3",
+      retry: "/generated/audio/voice-retry.mp3",
+    },
+    // Same generated music bed as the H3 main mission. The
+    // practice range is not silent: the player should feel the
+    // same ambient tension as on the main mission, just without
+    // a countdown. Speech lines still duck the music through
+    // the audio module.
+    music: "/generated/audio/music-blue-hour-relay.mp3",
+  },
+  // No timing fields: the discriminated union makes them
+  // structurally impossible on a practice scene.
+  status: "active",
+};
+
 const BLACK_RAIN_PORT: SceneConfig = {
   protocolVersion: SCENE_PROTOCOL_VERSION,
   id: "black-rain-port",
@@ -66,6 +140,7 @@ const BLACK_RAIN_PORT: SceneConfig = {
   sectorLabel: "SECTOR 12 // BLACK RAIN",
   masterMedia: { kind: "procedural" },
   grid: { cols: 4, rows: 3 },
+  ruleMode: "timed-mission",
   targets: [],
   audio: {
     voice: {},
@@ -85,6 +160,7 @@ const MORNING_OBSERVATORY: SceneConfig = {
   sectorLabel: "SECTOR 19 // DAWN RIDGE",
   masterMedia: { kind: "procedural" },
   grid: { cols: 4, rows: 3 },
+  ruleMode: "timed-mission",
   targets: [],
   audio: {
     voice: {},
@@ -98,6 +174,7 @@ const MORNING_OBSERVATORY: SceneConfig = {
 
 export const SCENES: ReadonlyArray<SceneConfig> = [
   NORTH_RELAY,
+  RAINFOREST_PRACTICE,
   BLACK_RAIN_PORT,
   MORNING_OBSERVATORY,
 ];

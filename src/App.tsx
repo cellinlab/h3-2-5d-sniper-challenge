@@ -24,8 +24,10 @@ import {
   setMuted,
   startHeartbeat,
   startMusic,
+  startScopeAmbience,
   stopHeartbeat,
   stopMusic,
+  stopScopeAmbience,
 } from "./audio/audio";
 import { StartScreen } from "./components/StartScreen";
 import { SceneStage } from "./components/SceneStage";
@@ -46,6 +48,11 @@ export const App = () => {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [resolvedAt, setResolvedAt] = useState<number | null>(null);
   const [hitFlash, setHitFlash] = useState<{ id: string; at: number } | null>(null);
+  // Per-target art images. The parent owns the load lifecycle so
+  // SceneStage can stay a pure renderer.
+  const [targetImages, setTargetImages] = useState<Map<string, HTMLImageElement>>(
+    () => new Map(),
+  );
   const firedRef = useRef<boolean>(false);
   const sceneRef = useRef<SceneConfig | null>(null);
   // The latest round is always reachable from inside the rAF loop
@@ -61,6 +68,58 @@ export const App = () => {
 
   const scene = useMemo(() => findScene(round.sceneId), [round.sceneId]);
   sceneRef.current = scene;
+
+  const handleMissingMedia = useCallback(() => {
+    dispatch({ type: "MISSING_MEDIA" });
+    // Stop immediately instead of waiting for the phase-to-screen
+    // promotion effect. This also covers target-art load failures,
+    // which happen in the parent image preloader.
+    stopMusic();
+  }, []);
+
+  // Preload per-target art images for the current scene. A new
+  // round clears the image cache; the loaders run in parallel and
+  // atomically swap the map when the last image arrives (or
+  // earlier, by replacing the map on each onload). A single
+  // missing art path surfaces through the same recovery path
+  // SceneStage used for the single-target case.
+  useEffect(() => {
+    if (!scene) {
+      setTargetImages(new Map());
+      return;
+    }
+    const next = new Map<string, HTMLImageElement>();
+    let cancelled = false;
+    let pending = scene.targets.length;
+    if (pending === 0) {
+      setTargetImages(next);
+      return;
+    }
+    for (const target of scene.targets) {
+      const img = new Image();
+      img.onload = () => {
+        if (cancelled) return;
+        next.set(target.id, img);
+        // Update on each load so cleared targets fall off cleanly
+        // when their art is reloaded; the parent re-renders with
+        // the freshest map. We swap the reference every time so
+        // React picks it up.
+        setTargetImages(new Map(next));
+        pending -= 1;
+        if (pending === 0) {
+          // All loaded; nothing more to do.
+        }
+      };
+      img.onerror = () => {
+        if (cancelled) return;
+        handleMissingMedia();
+      };
+      img.src = target.artPath;
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [scene, handleMissingMedia]);
 
   useEffect(() => {
     for (const candidate of SCENES) {
@@ -104,6 +163,13 @@ export const App = () => {
     if (screen !== "round") return;
     if (round.phase !== "observing" && round.phase !== "scoped") return;
     if (startedAt === null) return;
+    // Practice scenes have no time budget; the 22-second timer is
+    // a timed-mission contract that the reducer / HUD copy rely
+    // on. Skipping the rAF tick loop here is the cleanest way to
+    // keep "no time" a structural property of the practice mode
+    // rather than a runtime no-op.
+    if (scene?.ruleMode === "untimed-practice") return;
+    if (scene?.ruleMode !== "timed-mission") return;
     let frame = 0;
     let lastDispatchedMs = -1;
     const TICK_INTERVAL_MS = 100;
@@ -118,6 +184,13 @@ export const App = () => {
       if (current.phase !== "observing" && current.phase !== "scoped") {
         // Round resolved (success/failure) or paused through
         // PAUSE/RESUME — nothing to advance.
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+      // Only timed-mission scenes carry a budget and a danger
+      // curve. Practice scenes take the structural "no time"
+      // contract from `ruleMode` and are skipped here.
+      if (scene.ruleMode !== "timed-mission") {
         frame = requestAnimationFrame(tick);
         return;
       }
@@ -158,7 +231,7 @@ export const App = () => {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [screen, round.phase, startedAt]);
+  }, [screen, round.phase, startedAt, scene?.ruleMode]);
 
   // P2: pause the round when the tab becomes hidden, resume only on
   // an explicit user gesture (key press or pointer click). Without
@@ -190,32 +263,70 @@ export const App = () => {
     if (startedAt !== null) setStartedAt(startedAt + shift);
   }, [round.pausedAtMs, startedAt]);
 
-  // Heartbeat follows the danger level.
+  // The original wide-view heartbeat follows danger only in the
+  // timed mission. Once scoped, startScopeAmbience owns the double
+  // pulse so two independent heartbeat loops never stack. Practice
+  // is intentionally quiet in wide view and gains its calm pulse
+  // only after opening the scope.
   useEffect(() => {
-    if (screen !== "round") {
-      stopHeartbeat();
-      return;
-    }
-    if (round.phase !== "observing" && round.phase !== "scoped") {
+    if (
+      screen !== "round" ||
+      round.ruleMode !== "timed-mission" ||
+      round.phase !== "observing"
+    ) {
       stopHeartbeat();
       return;
     }
     startHeartbeat(round.danger);
     return () => stopHeartbeat();
-  }, [screen, round.phase, round.danger]);
+  }, [screen, round.phase, round.ruleMode, round.danger]);
 
   // Speech cues fire exactly once at each danger threshold. The
   // visible warning copy remains on screen for muted play.
+  // Practice rounds have no danger escalation, so this is a
+  // structural no-op for them (danger is always "calm" — see
+  // roundStateMachine) and the speech lines are not even
+  // configured in the practice manifest.
+  //
+  // The same effect also bumps the scope-ambience level: timed
+  // missions scale the heartbeat to the danger level; practice
+  // rounds stay at "calm" no matter what the reducer reports.
   useEffect(() => {
     if (screen !== "round") {
       previousDangerRef.current = "calm";
       return;
     }
     if (!scene || previousDangerRef.current === round.danger) return;
+    if (round.ruleMode === "untimed-practice") return;
     previousDangerRef.current = round.danger;
     if (round.danger === "warning") playVoice(scene.audio.voice.warning);
     if (round.danger === "final") playVoice(scene.audio.voice.finalWarning);
-  }, [screen, round.danger, scene]);
+  }, [screen, round.danger, round.ruleMode, scene]);
+
+  // Scope ambience: start the breath + heartbeat when the player
+  // enters scope, update the level when danger escalates, stop
+  // on every exit path. Practice rounds always run at "calm";
+  // timed-mission rounds track round.danger. The visibility /
+  // pause effect below stops the ambience too; resume will
+  // re-start it only if the round is still scoped.
+  useEffect(() => {
+    if (
+      screen === "round" &&
+      round.phase === "scoped" &&
+      round.pausedAtMs === null
+    ) {
+      const level = round.ruleMode === "untimed-practice" ? "calm" : round.danger;
+      startScopeAmbience(level);
+    } else {
+      stopScopeAmbience();
+    }
+  }, [
+    screen,
+    round.phase,
+    round.ruleMode,
+    round.danger,
+    round.pausedAtMs,
+  ]);
 
   // Resolve lines are independent from the result-screen transition,
   // so audio cannot be skipped by a fast React state update.
@@ -271,6 +382,8 @@ export const App = () => {
       type: "START_OBSERVATION",
       sceneId,
       crosshair: { u: 0.5, v: 0.5 },
+      ruleMode: s.ruleMode,
+      targetCount: s.targets.length,
     });
     setScreen("round");
     playCue("ui");
@@ -351,22 +464,33 @@ export const App = () => {
     [round, exitScope, scene, announce],
   );
 
-  // Left click in scope fires the single shot. The aim point is the
-  // event-derived scene coord, so the click works even when the
-  // mouse hasn't moved since scope entry. The handler is a strict
-  // no-op when the round is paused, so the resume mousedown cannot
-  // also fire the gun.
+  // Left click in scope fires. The aim point is the event-derived
+  // scene coord, so the click works even when the mouse hasn't
+  // moved since scope entry. The handler is a strict no-op when
+  // the round is paused, so the resume mousedown cannot also
+  // fire the gun.
+  //
+  // For a timed-mission scene `firedRef` is a one-shot latch and
+  // a second click would be ignored. For an untimed-practice
+  // scene the latch is reset at the start of every fire so the
+  // player can take another shot after a hit returns them to
+  // wide observation.
   const handleMouseDown = useCallback(
     (button: number, sceneCoordAtPointer: NormalizedCoord | null) => {
       if (button !== 0) return;
       if (!isGameplayInputAllowed(round)) return;
       if (round.phase !== "scoped") return;
-      if (firedRef.current) return;
       if (!scene) return;
+      if (firedRef.current) return;
       firedRef.current = true;
       const aim = sceneCoordAtPointer ?? round.scopeReticle;
       playCue("shot");
-      const hitId = hitTest(aim, scene);
+      // The reducer is the single source of truth for cleared
+      // targets. We pass `round.clearedTargetIds` (not a React
+      // mirror) so a defensive re-fire on the same hitbox cannot
+      // double-count the id and so the renderer, the hit test
+      // and the HUD all read the same list.
+      const hitId = hitTest(aim, scene, round.clearedTargetIds);
       if (hitId) {
         setHitFlash({ id: hitId, at: Date.now() });
         playCue("hit");
@@ -378,13 +502,16 @@ export const App = () => {
     [round, scene],
   );
 
-  const handleMissingMedia = useCallback(() => {
-    dispatch({ type: "MISSING_MEDIA" });
-    // The phase change effect above will also stopMusic when the
-    // screen transition fires, but we stop here as well so the
-    // audio bed fades out the instant the recovery UI is shown.
-    stopMusic();
-  }, []);
+  // Release the practice latch only after the reducer has committed
+  // the shot. Keeping it set through the current render prevents a
+  // rapid double-click from dispatching two FIRE events against the
+  // same stale scoped state. A miss increments shotCount and stays
+  // scoped; a hit increments it and returns to observation.
+  useEffect(() => {
+    if (round.ruleMode === "untimed-practice") {
+      firedRef.current = false;
+    }
+  }, [round.ruleMode, round.shotCount, round.phase]);
 
   // Keyboard: Enter confirms start, Esc backs out, M toggles mute.
   useEffect(() => {
@@ -417,10 +544,12 @@ export const App = () => {
         return;
       }
       if (e.key === "Enter") {
-        if (screen === "start") {
-          const first = SCENES.find((s) => s.status !== "locked");
-          if (first) startRound(first.id);
-        } else if (screen === "result") {
+        // StartScreen owns Enter while it is visible. Its focused
+        // card/CTA must be allowed to commit the selected practice
+        // scene; starting the first manifest scene here would race
+        // its 60ms confirm transition and always force north-relay.
+        if (screen === "start") return;
+        if (screen === "result") {
           if (round.phase === "success" || round.phase === "failure") {
             retryRound();
           } else {
@@ -468,12 +597,33 @@ export const App = () => {
     );
   }
 
-  const dangerClass = `danger-edge ${round.danger === "final" ? "final" : round.danger === "warning" ? "warning" : ""}`;
-  const dangerText =
-    round.danger === "final" ? "位置即将暴露。" : round.danger === "warning" ? "目标正在搜索你。" : "";
+  const isPractice = round.ruleMode === "untimed-practice";
+  // Practice scenes never show a danger edge or exposure copy.
+  const dangerClass = isPractice
+    ? "danger-edge hidden"
+    : `danger-edge ${round.danger === "final" ? "final" : round.danger === "warning" ? "warning" : ""}`;
+  const dangerText = isPractice
+    ? ""
+    : round.danger === "final"
+      ? "位置即将暴露。"
+      : round.danger === "warning"
+        ? "目标正在搜索你。"
+        : "";
   const elapsedMs = resolvedAt && startedAt ? resolvedAt - startedAt : 0;
   const phase = round.phase === "scoped" ? "scoped" : "observing";
   const showTarget = true;
+  const rulesLabel = isPractice ? "FREE PRACTICE" : "ONE SHOT";
+  const rulesTestId = isPractice ? "hud-rules-practice" : "hud-rules-mission";
+  const progressValue = isPractice
+    ? `${round.clearedTargetIds.length} / ${round.targetCount} CLEARED`
+    : null;
+  const controlValue = isPractice
+    ? round.phase === "scoped"
+      ? "移动瞄准 · 左键射击 · 右键退出"
+      : "移动观察 · 右键开镜"
+    : round.phase === "scoped"
+      ? "移动寻找目标 · 左键射击 · 右键退出"
+      : "移动鼠标观察 · 右键开镜";
 
   return (
     <div className="app-shell">
@@ -483,15 +633,14 @@ export const App = () => {
       </div>
       <div className="hud-corner tr" data-testid="hud-shot">
         <span className="label">RULES OF ENGAGEMENT</span>
-        <span className="value">ONE SHOT</span>
+        <span className="value" data-testid={rulesTestId}>
+          {rulesLabel}
+          {progressValue ? ` · ${progressValue}` : ""}
+        </span>
       </div>
       <div className="hud-corner bl">
         <span className="label">CONTROL</span>
-        <span className="value">
-          {round.phase === "scoped"
-            ? "移动寻找目标 · 左键射击 · 右键退出"
-            : "移动鼠标观察 · 右键开镜"}
-        </span>
+        <span className="value">{controlValue}</span>
       </div>
       <div className="hud-corner br">
         <span className="label">AUDIO</span>
@@ -514,10 +663,12 @@ export const App = () => {
         hitFlash={hitFlash}
         audioOn={audioOn}
         onMissingMedia={handleMissingMedia}
+        clearedTargetIds={round.clearedTargetIds}
+        targetImages={targetImages}
       />
       <div className={dangerClass} data-testid="danger-edge" data-danger={round.danger} />
       <div
-        className={`danger-text ${round.danger !== "calm" ? "visible" : ""}`}
+        className={`danger-text ${!isPractice && round.danger !== "calm" ? "visible" : ""}`}
         data-testid="danger-text"
       >
         {dangerText}
@@ -560,14 +711,26 @@ export const App = () => {
           variant={
             screen === "missing-media"
               ? "missing-media"
-              : round.phase === "success"
-                ? "success"
-                : "failure"
+              : isPractice
+                ? "practice-success"
+                : round.phase === "success"
+                  ? "success"
+                  : "failure"
           }
           scene={scene}
           elapsedMs={elapsedMs}
           onRetry={retryRound}
           onBack={goToStart}
+          practiceSummary={
+            isPractice
+              ? {
+                  cleared: round.clearedTargetIds.length,
+                  total: round.targetCount,
+                  shots: round.shotCount,
+                  hits: round.hitCount,
+                }
+              : null
+          }
         />
       )}
     </div>

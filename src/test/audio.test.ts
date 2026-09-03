@@ -27,6 +27,9 @@ import {
   __getMusicVolume,
   __isMusicDucked,
   __isMusicPaused,
+  __isScopeAmbienceActive,
+  __isScopeHeartbeatActive,
+  __getScopeLevel,
   __test,
   duckForSpeech,
   pauseMusic,
@@ -34,7 +37,9 @@ import {
   resumeMusic,
   setMuted,
   startMusic,
+  startScopeAmbience,
   stopMusic,
+  stopScopeAmbience,
   unduckForSpeech,
 } from "../audio/audio";
 
@@ -354,5 +359,88 @@ describe("setMuted covers every audio layer", () => {
     // (the existing isMuted API is already covered by other
     // modules; we just keep the test honest about its own
     // surface).
+  });
+});
+
+/**
+ * The scope ambience runs whenever the player is in scope. It
+ * is a pair of Web Audio nodes: a filtered noise loop (breath)
+ * and a low-frequency double-pulse interval (heartbeat). The
+ * tests do not wait for real timer / rAF ticks — the module
+ * exposes an `__isScopeAmbienceActive` predicate that the React
+ * orchestrator can read, and we assert on the predicate plus
+ * the level / mute side-effects.
+ */
+describe("scope ambience - breath + heartbeat", () => {
+  beforeEach(() => {
+    __test.reset();
+    installAudioPauseStub();
+  });
+  afterEach(() => {
+    stopScopeAmbience();
+    __test.reset();
+    vi.restoreAllMocks();
+  });
+
+  it("startScopeAmbience activates both layers and stopScopeAmbience tears them down", () => {
+    expect(__isScopeAmbienceActive()).toBe(false);
+    startScopeAmbience("calm");
+    expect(__isScopeAmbienceActive()).toBe(true);
+    expect(__getScopeLevel()).toBe("calm");
+    stopScopeAmbience();
+    expect(__isScopeAmbienceActive()).toBe(false);
+  });
+
+  it("a second startScopeAmbience replaces the previous level cleanly", () => {
+    startScopeAmbience("calm");
+    expect(__getScopeLevel()).toBe("calm");
+    startScopeAmbience("warning");
+    expect(__getScopeLevel()).toBe("warning");
+    // Active throughout; no leak from the first call.
+    expect(__isScopeAmbienceActive()).toBe(true);
+    stopScopeAmbience();
+  });
+
+  it("stopScopeAmbience is safe to call when not running", () => {
+    expect(() => stopScopeAmbience()).not.toThrow();
+    expect(__isScopeAmbienceActive()).toBe(false);
+  });
+
+  it("setMuted(true) while ambience is running leaves the heartbeat silent and the breath gain at zero", () => {
+    installAudioPlaySpy();
+    startMusic("/generated/audio/music-blue-hour-relay.mp3");
+    startScopeAmbience("calm");
+    expect(__isScopeAmbienceActive()).toBe(true);
+    setMuted(true);
+    // Heartbeat is gated by externalMuted at fire time, so it
+    // simply produces no sound; the test cannot read a private
+    // gain, but the predicate must still report active because
+    // the layer is wired up and will resume on unmute.
+    expect(__isScopeAmbienceActive()).toBe(true);
+    setMuted(false);
+    expect(__isScopeAmbienceActive()).toBe(true);
+    stopScopeAmbience();
+  });
+
+  it("unmuting a scope that was entered while muted restores its heartbeat schedule", () => {
+    setMuted(true);
+    startScopeAmbience("calm");
+    expect(__isScopeAmbienceActive()).toBe(true);
+    expect(__isScopeHeartbeatActive()).toBe(false);
+    setMuted(false);
+    expect(__isScopeAmbienceActive()).toBe(true);
+    expect(__isScopeHeartbeatActive()).toBe(true);
+  });
+
+  it("the heartbeat does not actually fire while the test is running (no real timers in jsdom)", () => {
+    // The point of this test is to pin the contract that we
+    // never wait on real setInterval ticks. The predicate is
+    // synchronous; we never sleep for the heartbeat interval.
+    const before = __isScopeAmbienceActive();
+    startScopeAmbience("final");
+    const after = __isScopeAmbienceActive();
+    expect(before).toBe(false);
+    expect(after).toBe(true);
+    expect(__getScopeLevel()).toBe("final");
   });
 });

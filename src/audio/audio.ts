@@ -93,6 +93,217 @@ let musicGestureCleanup: (() => void) | null = null;
  *  unduck is skipped. */
 let voiceToken = 0;
 
+// ----- Scope ambience (breath + heartbeat while scoped) -----
+
+/** Low filtered noise simulating the player's breath through the
+ *  scope. The gain is gently modulated by a slow sine to mimic
+ *  inhale / exhale; the volume stays just above the music bed. */
+let scopeBreathNode: AudioBufferSourceNode | null = null;
+let scopeBreathFilter: BiquadFilterNode | null = null;
+let scopeBreathGain: GainNode | null = null;
+/** Double-pulse low-freq thump at a danger-dependent interval. */
+let scopeHeartbeatTimer: number | null = null;
+/** Desired lifecycle state, independent of whether this browser
+ * exposes Web Audio or whether the ambience was entered while
+ * muted. */
+let scopeAmbienceRequested = false;
+/** The danger level currently driving the scope heartbeat
+ *  interval. `calm` is the default; `warning` and `final` shorten
+ *  the interval and slightly raise the gain. */
+let scopeLevel: "calm" | "warning" | "final" = "calm";
+/** A rAF handle used for the breath gain sine. */
+let scopeBreathRaf: number | null = null;
+
+/** Stop and tear down the breath noise source and gain node. */
+const teardownBreath = () => {
+  if (scopeBreathRaf !== null) {
+    cancelAnimationFrame(scopeBreathRaf);
+    scopeBreathRaf = null;
+  }
+  if (scopeBreathNode) {
+    try {
+      scopeBreathNode.stop();
+    } catch {
+      // already stopped
+    }
+    try {
+      scopeBreathNode.disconnect();
+    } catch {
+      // ignore
+    }
+    scopeBreathNode = null;
+  }
+  if (scopeBreathFilter) {
+    try {
+      scopeBreathFilter.disconnect();
+    } catch {
+      // ignore
+    }
+    scopeBreathFilter = null;
+  }
+  if (scopeBreathGain) {
+    try {
+      scopeBreathGain.disconnect();
+    } catch {
+      // ignore
+    }
+    scopeBreathGain = null;
+  }
+};
+
+/** Stop the heartbeat interval. */
+const teardownHeartbeat = () => {
+  if (scopeHeartbeatTimer !== null) {
+    window.clearInterval(scopeHeartbeatTimer);
+    scopeHeartbeatTimer = null;
+  }
+};
+
+const SCOPE_HEARTBEAT_INTERVALS: Record<
+  "calm" | "warning" | "final",
+  number
+> = {
+  calm: 1500,
+  warning: 900,
+  final: 600,
+};
+
+const SCOPE_HEARTBEAT_GAIN: Record<"calm" | "warning" | "final", number> = {
+  calm: 0.18,
+  warning: 0.26,
+  final: 0.32,
+};
+
+/** Start the breath noise. Safe to call when already started;
+ *  the previous source is stopped first. */
+const startBreath = () => {
+  const c = ensureRunning();
+  if (!c || !masterGain) return;
+  teardownBreath();
+  const sampleRate = c.sampleRate;
+  const bufferSize = Math.floor(sampleRate * 4);
+  const buffer = c.createBuffer(1, bufferSize, sampleRate);
+  const data = buffer.getChannelData(0);
+  // Pink-ish noise: light low-pass via averaging neighbors so the
+  // breath sounds "windy" without a sharp hiss.
+  let last = 0;
+  for (let i = 0; i < bufferSize; i += 1) {
+    const white = Math.random() * 2 - 1;
+    const mixed = last * 0.85 + white * 0.15;
+    last = mixed;
+    data[i] = mixed;
+  }
+  const src = c.createBufferSource();
+  src.buffer = buffer;
+  src.loop = true;
+  const filter = c.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 360;
+  filter.Q.value = 0.4;
+  const gain = c.createGain();
+  gain.gain.value = 0;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  src.start();
+  scopeBreathNode = src;
+  scopeBreathFilter = filter;
+  scopeBreathGain = gain;
+  // Slow inhale/exhale modulation, period ~3.2s, peak gain
+  // ~0.045 (just over the music bed). If muted, stay at zero.
+  const startMs = performance.now();
+  const targetPeak = externalMuted ? 0 : 0.045;
+  const step = () => {
+    scopeBreathRaf = null;
+    if (!scopeBreathGain) return;
+    const t = (performance.now() - startMs) / 3200;
+    const envelope = 0.5 - 0.5 * Math.cos(t * Math.PI * 2);
+    scopeBreathGain.gain.value = targetPeak * envelope;
+    scopeBreathRaf = requestAnimationFrame(step);
+  };
+  scopeBreathRaf = requestAnimationFrame(step);
+};
+
+/** A single double-pulse thump at the current level. */
+const fireHeartbeat = () => {
+  if (externalMuted) return;
+  const c = ensureRunning();
+  if (!c || !masterGain) return;
+  // Capture as a local so the inner closure can pass it to
+  // AudioNode.connect (which requires a non-null node, but TS
+  // can't narrow a closure-captured `let` through the outer
+  // null check).
+  const out: GainNode = masterGain;
+  const fireOnce = (startOffset: number, gain: number) => {
+    const osc = c.createOscillator();
+    const env = c.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(56, now() + startOffset);
+    osc.frequency.exponentialRampToValueAtTime(38, now() + startOffset + 0.18);
+    env.gain.setValueAtTime(0, now() + startOffset);
+    env.gain.linearRampToValueAtTime(gain, now() + startOffset + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.0001, now() + startOffset + 0.22);
+    osc.connect(env);
+    env.connect(out);
+    osc.start(now() + startOffset);
+    osc.stop(now() + startOffset + 0.26);
+  };
+  const baseGain = SCOPE_HEARTBEAT_GAIN[scopeLevel];
+  // Double-pulse: a tight main thump and a slightly softer echo
+  // 0.18s later. Together they read as a single heartbeat.
+  fireOnce(0, baseGain);
+  fireOnce(0.18, baseGain * 0.55);
+};
+
+/**
+ * Start the scope ambience: filtered breath noise + a low
+ * double-pulse heartbeat. Safe to call repeatedly; the previous
+ * instances are torn down first. The level controls only the
+ * heartbeat interval / gain; the breath stays at the same
+ * quiet baseline so the player does not get jump-scared.
+ *
+ * `calm` is the only level that matters for the practice scene;
+ * the timed-mission orchestrator bumps the level as danger
+ * escalates.
+ */
+export const startScopeAmbience = (
+  level: "calm" | "warning" | "final" = "calm",
+): void => {
+  scopeAmbienceRequested = true;
+  scopeLevel = level;
+  startBreath();
+  teardownHeartbeat();
+  if (externalMuted) return;
+  const interval = SCOPE_HEARTBEAT_INTERVALS[level];
+  scopeHeartbeatTimer = window.setInterval(fireHeartbeat, interval);
+};
+
+/**
+ * Stop the scope ambience. Called when leaving the scope, when
+ * the round resolves, when the page is hidden, or when the
+ * component unmounts. Safe to call when not running.
+ */
+export const stopScopeAmbience = (): void => {
+  scopeAmbienceRequested = false;
+  teardownBreath();
+  teardownHeartbeat();
+};
+
+/** Test-only: read the current danger level used by the
+ *  scope heartbeat. */
+export const __getScopeLevel = (): "calm" | "warning" | "final" => scopeLevel;
+
+/** Test-only: are either the breath or the heartbeat active? */
+export const __isScopeAmbienceActive = (): boolean => {
+  return scopeAmbienceRequested;
+};
+
+/** Test-only: distinguish a muted breath graph from a fully running
+ * heartbeat schedule. */
+export const __isScopeHeartbeatActive = (): boolean => {
+  return scopeHeartbeatTimer !== null;
+};
+
 const getContext = (): AudioContext | null => {
   if (typeof window === "undefined") return null;
   if (ctx) return ctx;
@@ -254,6 +465,66 @@ export const playHit = (): void => {
   if (externalMuted) return;
   playBlip(523.25, 0.18, "sine", 0.25);
   window.setTimeout(() => playBlip(783.99, 0.32, "sine", 0.25), 140);
+};
+
+/**
+ * Subtle radio-style click for moving the selection on the
+ * scene-select screen. Two short, low-gain band-passed tones
+ * 70ms apart keep it short and never strident.
+ */
+export const playSceneSelect = (): void => {
+  if (externalMuted) return;
+  const c = ensureRunning();
+  if (!c || !masterGain) return;
+  const out: GainNode = masterGain;
+  const tone = (freq: number, start: number, dur: number, gain: number) => {
+    const osc = c.createOscillator();
+    const env = c.createGain();
+    const filter = c.createBiquadFilter();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(freq, now() + start);
+    filter.type = "bandpass";
+    filter.frequency.value = freq * 1.2;
+    filter.Q.value = 4;
+    env.gain.setValueAtTime(0, now() + start);
+    env.gain.linearRampToValueAtTime(gain, now() + start + 0.005);
+    env.gain.exponentialRampToValueAtTime(0.0001, now() + start + dur);
+    osc.connect(filter);
+    filter.connect(env);
+    env.connect(out);
+    osc.start(now() + start);
+    osc.stop(now() + start + dur + 0.02);
+  };
+  tone(880, 0, 0.05, 0.18);
+  tone(1320, 0.07, 0.05, 0.12);
+};
+
+/**
+ * Heavier confirm tone for committing the selected scene. A
+ * two-note rising motif followed by a soft sub-thump, kept
+ * under 0.5s total so the next scene's intro still leads.
+ */
+export const playSceneConfirm = (): void => {
+  if (externalMuted) return;
+  const c = ensureRunning();
+  if (!c || !masterGain) return;
+  const out: GainNode = masterGain;
+  const tone = (freq: number, start: number, dur: number, type: OscillatorType, gain: number) => {
+    const osc = c.createOscillator();
+    const env = c.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now() + start);
+    env.gain.setValueAtTime(0, now() + start);
+    env.gain.linearRampToValueAtTime(gain, now() + start + 0.008);
+    env.gain.exponentialRampToValueAtTime(0.0001, now() + start + dur);
+    osc.connect(env);
+    env.connect(out);
+    osc.start(now() + start);
+    osc.stop(now() + start + dur + 0.05);
+  };
+  tone(523.25, 0, 0.18, "sine", 0.22);
+  tone(783.99, 0.14, 0.22, "sine", 0.22);
+  tone(110, 0.32, 0.16, "sine", 0.18);
 };
 
 /** Failure cue: descending minor third. */
@@ -567,6 +838,7 @@ export const playVoice = (src: string | undefined): void => {
 
 /** Mute or unmute all cues including the music element. */
 export const setMuted = (muted: boolean): void => {
+  const scopeWasActive = __isScopeAmbienceActive();
   externalMuted = muted;
   for (const voice of voiceCache.values()) voice.muted = muted;
   if (musicEl) {
@@ -579,6 +851,22 @@ export const setMuted = (muted: boolean): void => {
     } else {
       rampMusicVolume(musicDucked ? BASELINE_VOLUME * DUCK_RATIO : BASELINE_VOLUME);
     }
+  }
+  // Scope ambience: if we are currently inside a scoped round,
+  // the breath gain stays at zero while muted; when unmuted
+  // the breath resumes from its current sine phase. The
+  // heartbeat is gated by externalMuted at fire time.
+  if (scopeBreathGain) {
+    if (muted) {
+      scopeBreathGain.gain.value = 0;
+    }
+  }
+  if (!muted && scopeWasActive) {
+    // startScopeAmbience may have been entered while muted. In that
+    // case it created the silent breath graph but deliberately did
+    // not schedule a heartbeat. Re-start both layers together so
+    // unmute restores the complete scoped soundscape.
+    startScopeAmbience(scopeLevel);
   }
   if (masterGain) {
     masterGain.gain.cancelScheduledValues(now());
@@ -598,6 +886,8 @@ export const __test = {
     externalMuted = false;
     heartbeatMuted = false;
     stopMusic();
+    stopScopeAmbience();
+    scopeLevel = "calm";
     if (currentVoice) {
       currentVoice.pause();
       currentVoice.currentTime = 0;

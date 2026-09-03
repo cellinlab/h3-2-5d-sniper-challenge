@@ -36,6 +36,7 @@ const makeVideo = (overrides: Partial<MinimalVideo> = {}): MinimalVideo => ({
 
 const makeScene = (overrides: Partial<SceneConfig> = {}): SceneConfig => ({
   protocolVersion: SCENE_PROTOCOL_VERSION,
+  ruleMode: "timed-mission",
   id: "north-relay",
   title: "北境中继站",
   subtitle: "工业设施 · 蓝色时刻",

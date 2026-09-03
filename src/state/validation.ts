@@ -28,6 +28,7 @@ const isUnitInterval = (v: number) => v >= 0 && v <= 1;
 
 const ALLOWED_SCENE_KEYS: ReadonlySet<string> = new Set([
   "protocolVersion",
+  "ruleMode",
   "id",
   "title",
   "subtitle",
@@ -245,26 +246,55 @@ export function validateSceneConfig(raw: unknown): ValidationResult {
     }
   }
 
-  // timing
-  if (!isNumber(raw.roundBudgetMs) || raw.roundBudgetMs < 4000 || raw.roundBudgetMs > 60000) {
-    errors.push("scene.roundBudgetMs must be a number in [4000, 60000]");
-  }
-  if (!isNumber(raw.warningAt) || !isUnitInterval(raw.warningAt)) {
-    errors.push("scene.warningAt must be a number in [0, 1]");
-  }
-  if (!isNumber(raw.finalWarningAt) || !isUnitInterval(raw.finalWarningAt)) {
-    errors.push("scene.finalWarningAt must be a number in [0, 1]");
-  }
-  if (
-    isNumber(raw.warningAt) &&
-    isNumber(raw.finalWarningAt) &&
-    raw.warningAt >= raw.finalWarningAt
-  ) {
-    errors.push("scene.warningAt must be strictly less than scene.finalWarningAt");
-  }
+  // Timing fields are now mode-dependent; the strict checks are
+  // run below once `raw.ruleMode` is known. The legacy
+  // unconditional block that used to live here is gone.
 
   if (raw.status !== undefined && raw.status !== "active" && raw.status !== "locked") {
     errors.push(`scene.status must be "active" or "locked" (got ${String(raw.status)})`);
+  }
+
+  // Rule mode is required and must be one of the two known modes.
+  // The type-level discriminant is mirrored here: an unknown
+  // value must be rejected before the scene reaches a round.
+  if (!isString(raw.ruleMode)) {
+    errors.push("scene.ruleMode must be a non-empty string");
+  } else if (raw.ruleMode !== "timed-mission" && raw.ruleMode !== "untimed-practice") {
+    errors.push(
+      `scene.ruleMode must be "timed-mission" or "untimed-practice" (got ${String(raw.ruleMode)})`,
+    );
+  }
+
+  // Timing fields are required only for timed missions. A practice
+  // scene carrying them is a structural mistake; we reject it so a
+  // typo cannot silently change the round's behavior.
+  if (raw.ruleMode === "timed-mission") {
+    if (!isNumber(raw.roundBudgetMs) || raw.roundBudgetMs < 4000 || raw.roundBudgetMs > 60000) {
+      errors.push("scene.roundBudgetMs must be a number in [4000, 60000]");
+    }
+    if (!isNumber(raw.warningAt) || !isUnitInterval(raw.warningAt)) {
+      errors.push("scene.warningAt must be a number in [0, 1]");
+    }
+    if (!isNumber(raw.finalWarningAt) || !isUnitInterval(raw.finalWarningAt)) {
+      errors.push("scene.finalWarningAt must be a number in [0, 1]");
+    }
+    if (
+      isNumber(raw.warningAt) &&
+      isNumber(raw.finalWarningAt) &&
+      raw.warningAt >= raw.finalWarningAt
+    ) {
+      errors.push("scene.warningAt must be strictly less than scene.finalWarningAt");
+    }
+  } else if (raw.ruleMode === "untimed-practice") {
+    if (raw.roundBudgetMs !== undefined) {
+      errors.push("scene.roundBudgetMs is forbidden on untimed-practice scenes");
+    }
+    if (raw.warningAt !== undefined) {
+      errors.push("scene.warningAt is forbidden on untimed-practice scenes");
+    }
+    if (raw.finalWarningAt !== undefined) {
+      errors.push("scene.finalWarningAt is forbidden on untimed-practice scenes");
+    }
   }
 
   if (errors.length > 0) {

@@ -4,6 +4,7 @@ import { SCENE_PROTOCOL_VERSION } from "../types/scene";
 
 const baseConfig = {
   protocolVersion: SCENE_PROTOCOL_VERSION,
+  ruleMode: "timed-mission" as const,
   id: "north-relay",
   title: "北境中继站",
   subtitle: "工业设施 · 蓝色时刻",
@@ -207,6 +208,94 @@ describe("validateSceneConfig - status", () => {
   });
   it("rejects unknown status values", () => {
     const r = validateSceneConfig({ ...baseConfig, status: "beta" });
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("validateSceneConfig - ruleMode discriminant", () => {
+  it("accepts a timed-mission scene with timing fields", () => {
+    const r = validateSceneConfig({
+      ...baseConfig,
+      ruleMode: "timed-mission",
+      roundBudgetMs: 22000,
+      warningAt: 0.55,
+      finalWarningAt: 0.85,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a timed-mission scene missing the timing fields", () => {
+    const { roundBudgetMs: _b, warningAt: _w, finalWarningAt: _f, ...rest } = {
+      ...baseConfig,
+      ruleMode: "timed-mission",
+      roundBudgetMs: 22000,
+      warningAt: 0.55,
+      finalWarningAt: 0.85,
+    };
+    void _b;
+    void _w;
+    void _f;
+    const r = validateSceneConfig(rest);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(
+        r.errors.some((e) =>
+          ["roundBudgetMs", "warningAt", "finalWarningAt"].some((k) => e.includes(k)),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("accepts an untimed-practice scene with no timing fields", () => {
+    const r = validateSceneConfig({
+      protocolVersion: SCENE_PROTOCOL_VERSION,
+      ruleMode: "untimed-practice",
+      id: "practice",
+      title: "t",
+      subtitle: "s",
+      sectorLabel: "lbl",
+      masterMedia: { kind: "procedural" },
+      grid: { cols: 4, rows: 3 },
+      targets: [
+        {
+          id: "op-1",
+          center: { u: 0.2, v: 0.3 },
+          halfSize: { hU: 0.02, hV: 0.03 },
+          artPath: "/x.png",
+          distanceMeters: 100,
+        },
+      ],
+      audio: { voice: {}, music: null },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects an untimed-practice scene that smuggles timing fields", () => {
+    const r = validateSceneConfig({
+      ...baseConfig,
+      ruleMode: "untimed-practice",
+      roundBudgetMs: 22000,
+      warningAt: 0.55,
+      finalWarningAt: 0.85,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors.some((e) => e.includes("forbidden on untimed-practice"))).toBe(true);
+    }
+  });
+
+  it("rejects unknown ruleMode values", () => {
+    const r = validateSceneConfig({ ...baseConfig, ruleMode: "unlimited" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors.some((e) => e.includes("ruleMode"))).toBe(true);
+    }
+  });
+
+  it("rejects a missing ruleMode", () => {
+    const { ruleMode: _omit, ...rest } = baseConfig;
+    void _omit;
+    const r = validateSceneConfig(rest);
     expect(r.ok).toBe(false);
   });
 });

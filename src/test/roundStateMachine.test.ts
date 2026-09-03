@@ -355,3 +355,117 @@ describe("isGameplayInputAllowed", () => {
     expect(isGameplayInputAllowed(s)).toBe(true);
   });
 });
+
+/**
+ * Brief acceptance items 2, 3, 4, 5, 6: the untimed-practice
+ * reducer branch behaves like a multi-shot elimination range
+ * whose success is decided by coverage, not time.
+ */
+describe("roundStateMachine - untimed-practice rule mode", () => {
+  const startPractice = (count: number) =>
+    startObservation("rainforest-practice", { u: 0.5, v: 0.5 }, "untimed-practice", count);
+
+  it("a miss in scoped keeps the round active and counts the shot", () => {
+    let s = startPractice(3);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: null });
+    expect(s.phase).toBe("scoped");
+    expect(s.shotCount).toBe(1);
+    expect(s.hitCount).toBe(0);
+    expect(s.clearedTargetIds).toEqual([]);
+    expect(s.hasFired).toBe(false);
+  });
+
+  it("multiple misses in a row are allowed", () => {
+    let s = startPractice(3);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: null });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: null });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: null });
+    expect(s.phase).toBe("scoped");
+    expect(s.shotCount).toBe(3);
+    expect(s.hitCount).toBe(0);
+  });
+
+  it("a hit adds the unique id to the cleared set and returns to observation", () => {
+    let s = startPractice(3);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    expect(s.phase).toBe("observing");
+    expect(s.clearedTargetIds).toEqual(["op-1"]);
+    expect(s.hitCount).toBe(1);
+    expect(s.shotCount).toBe(1);
+    expect(s.scopeEntry).toBeNull();
+  });
+
+  it("the cleared id is not added twice (idempotent on duplicate hitTargetId)", () => {
+    let s = startPractice(3);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    expect(s.clearedTargetIds).toEqual(["op-1"]);
+  });
+
+  it("the round resolves to success only after every target id has been cleared", () => {
+    let s = startPractice(2);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    expect(s.phase).toBe("observing");
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-2" });
+    expect(s.phase).toBe("success");
+    expect(s.clearedTargetIds).toEqual(["op-1", "op-2"]);
+    expect(s.hitCount).toBe(2);
+    expect(s.shotCount).toBe(2);
+  });
+
+  it("a practice round does not transition to failure from any legal input", () => {
+    let s = startPractice(3);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: null });
+    expect(s.phase).not.toBe("failure");
+    s = reduceRound(s, { type: "EXIT_SCOPE" });
+    expect(s.phase).toBe("observing");
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    expect(s.phase).toBe("observing");
+  });
+});
+
+/**
+ * Brief acceptance item 2: the timed-mission branch must still
+ * time out at 22000ms and resolve after the first shot. These
+ * pins protect the contract against a future refactor of the
+ * FIRE reducer's mode switch.
+ */
+describe("roundStateMachine - timed-mission invariants are unchanged", () => {
+  it("22000ms TICK still resolves to failure via TIMEOUT", () => {
+    let s = startObservation("north-relay", { u: 0.5, v: 0.5 }, "timed-mission", 1);
+    s = reduceRound(s, {
+      type: "TICK",
+      elapsedMs: 22000,
+      warningAt: 0.55 * 22000,
+      finalWarningAt: 0.85 * 22000,
+      roundBudgetMs: 22000,
+    });
+    expect(s.phase).toBe("failure");
+  });
+
+  it("a single shot still resolves the round (success or failure)", () => {
+    let s = startObservation("north-relay", { u: 0.5, v: 0.5 }, "timed-mission", 1);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    expect(s.phase).toBe("success");
+    expect(s.hasFired).toBe(true);
+    expect(s.hitCount).toBe(0);
+    expect(s.shotCount).toBe(0);
+  });
+
+  it("a second FIRE in a timed-mission round throws", () => {
+    let s = startObservation("north-relay", { u: 0.5, v: 0.5 }, "timed-mission", 1);
+    s = reduceRound(s, { type: "ENTER_SCOPE", at: { u: 0.5, v: 0.5 } });
+    s = reduceRound(s, { type: "FIRE", hitTargetId: "op-1" });
+    expect(() => reduceRound(s, { type: "FIRE", hitTargetId: null })).toThrow();
+  });
+});
