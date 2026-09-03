@@ -144,3 +144,22 @@ vite.config.ts.timestamp-*
 
 # Mac OS
 .DS_Store
+
+# Generated/private media stays local. The public repository keeps prompts only.
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aac
+*.aiff
+
+# Local captures and provider outputs
+captures/
+recordings/
+public/media/
+public/audio/
+public/generated/
