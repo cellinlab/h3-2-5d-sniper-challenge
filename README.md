@@ -4,7 +4,7 @@
 
 玩家先在完整动态场景中移动准星，右键开镜后自动进入准星所在的局部视野。在 22 秒的隐藏时限内找到目标并完成唯一的一枪，否则会被对方先一步锁定。
 
-可选的热带雨林前哨是无限时的多目标练习场，绑 H2.3 视频，三个人物分属哨塔/平台/机舱三个不同景深，可多次射击，逐个清除。
+可选的热带雨林前哨是无限时的多目标练习场，使用 H2.3 视频，三个人物分属哨塔/平台/机舱三个不同景深，可多次射击，逐个清除。城市天际线和机场到达区同样使用 H2.3 视频，分别加入黄衣信使与红衣旅客两项限时任务；四个场景共用同一套瞄准、命中和音频协议。
 
 ## 已实现
 
@@ -20,7 +20,7 @@
 - 缺失媒体阻断、视频自动播放恢复、窗口比例与高 DPR 画布对齐；
 - 录音级场景选择页：hero 战术背景 + 4 张真实图片卡（主卡 + 三联次卡）、琥珀/海蓝绿描边 + 能量条 + 焦点态，场景卡位置在选择时保持稳定，独立 Web Audio 短 cue（scene-select）与确认 cue（scene-confirm），按 M 静音按 Enter 进入；
 - 版本化场景协议（timed-mission 与 untimed-practice 两种 ruleMode 判别）、目标原始比例、镜心首击、渐进提示、标签隐藏暂停与音频生命周期；
-- 12 个测试文件、212 项测试，以及 TypeScript + Vite 生产构建。
+- 12 个测试文件、214 项测试，以及 TypeScript + Vite 生产构建。
 
 本仓库只保存代码、Prompt、参数与复现说明。H3 / H2.3 视频、语音、截图、录屏、账户信息和 API Key 不进入公开 Git 历史。
 
@@ -57,7 +57,7 @@ npm test
 npm run dev
 ```
 
-打开终端显示的本地地址。生成媒体不随仓库分发，因此第一次进入任务会看到“任务素材未就绪”；按下一节准备两个本地文件即可试玩。
+打开终端显示的本地地址。生成媒体不随仓库分发，因此第一次进入任务会看到“任务素材未就绪”；按下一节准备本地媒体即可试玩。
 
 ## 准备本地媒体
 
@@ -66,22 +66,27 @@ npm run dev
 ```text
 public/generated/north-relay-h3-4s-1080p-runtime.mp4
 public/generated/rainforest-practice-h23-6s-768p.mp4
+public/generated/urban-rooftop-h23-6s-768p.mp4
+public/generated/airport-arrival-h23-6s-768p.mp4
 public/generated/target-operative.png
 public/generated/target-rainforest-binoculars.png
 public/generated/target-rainforest-radio.png
 public/generated/target-rainforest-guard.png
+public/generated/target-urban-courier.png
+public/generated/target-airport-traveler.png
 public/generated/scope-body-realistic.png
 public/generated/menu-hero-tactical-v2.png
 public/generated/menu-scene-north.jpg
 public/generated/menu-scene-rainforest.jpg
-public/generated/menu-scene-black-rain.png
-public/generated/menu-scene-observatory.png
+public/generated/menu-scene-urban.jpg
+public/generated/menu-scene-airport.jpg
 public/generated/audio/music-blue-hour-relay.mp3
+public/generated/audio/music-overwatch-protocol.mp3
 ```
 
 - 视频：任意可在浏览器解码的 16:9 H.264 MP4；建议固定机位。当前场景会循环播放，宽景和瞄准镜自动共享时间轴。项目实战版把原始 `1344×768` H3 文件居中裁为 16:9，用 ffmpeg 对首尾画面与音轨做 0.5 秒交叉淡化，再以 Lanczos 重采样至 1080P 并轻微锐化；这是浏览器运行衍生版，不宣称为原生 2K。
 - 目标：带透明通道的虚构人物或机器人 PNG。默认标定点为 `(u=0.625, v=0.7)`，可在 [`src/scenes/sceneConfig.ts`](src/scenes/sceneConfig.ts) 修改位置、尺寸和命中范围。
-- 音乐：可循环的器乐 MP3。实战版使用 MiniMax Audio Music 3.0 网页生成的 `Blue Hour Relay`，约 2:16、44.1 kHz stereo；音乐基线音量为 0.16，Speech 播放时平滑降低到 0.048。缺少音乐不会阻塞游戏，但完整录制需要准备该文件。
+- 音乐：可循环的器乐 MP3。实战版的北境与雨林使用 MiniMax Audio Music 3.0 网页生成的 `Blue Hour Relay`；城市与机场使用节奏更强的 `Overwatch Protocol`。音乐基线音量为 0.16，Speech 播放时平滑降低到 0.048。缺少音乐不会阻塞游戏，但完整录制需要准备对应文件。
 
 最终 H3 文件可替换上述 MP4，或把 `masterMedia.src` 改为新的本地路径。不要提交生成媒体、供应商响应或账户 ID。
 

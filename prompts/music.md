@@ -1,6 +1,6 @@
 # Music and Sound Design Prompts
 
-## Final Music 3.0 Prompt
+## Blue Hour Relay — original H3 scene score
 
 Instrumental was enabled. The song name was `Blue Hour Relay`.
 
@@ -19,4 +19,12 @@ The official `music-2.6-free` API request returned that Music API access is no l
 
 The selected local file is `public/generated/audio/music-blue-hour-relay.mp3`: 44.1 kHz stereo, 4,357,686 bytes, SHA-256 `5cace375a123509d33dcb3a56096e418787b1930b085b0a15253ec401ed8525c`. The file is intentionally ignored by Git.
 
-The playable build loops this Music 3.0 result at volume `0.16`, ducks it to `0.048` during MiniMax Speech, keeps the H3 video's own ambience at a lower spatial layer, and reserves deterministic Web Audio for UI, scope, heartbeat, shot, hit and failure cues. `M` mutes all four layers.
+## Overwatch Protocol — final field-mission score
+
+Instrumental was enabled. The song name was `Overwatch Protocol`.
+
+> Instrumental cinematic tactical game score, 92 BPM, dark modern hybrid electronic orchestra built for a high-altitude urban and airport surveillance mission. Powerful but controlled sub-bass pulses, deep taiko-style percussion, tight metallic impacts, tense low strings, processed brass swells, glassy arpeggiator, short sonar ticks, distant radio-static transitions, reverse risers and brief air-pressure drops as integrated production FX. Begin with an immediate 3-second hook, then sustain a stalking pulse with two clean tension rises and a decisive but loop-friendly tail. Wide stereo, punchy master, cinematic dynamic range. No vocals, no spoken words, no lyrics, no gunshots, no sirens, no cheerful melody, no EDM festival drop, no copyrighted motif. Leave midrange space for Mandarin mission-control voice and game heartbeat.
+
+Music 3.0 returned two candidates. The 1:59 version was selected for the urban and airport missions because its immediate pulse survives short gameplay cuts without masking Speech 2.8 or the code-generated heartbeat. The selected local file is `public/generated/audio/music-overwatch-protocol.mp3`: 48 kHz stereo, 3,813,932 bytes, SHA-256 `1a1aa1e2d3ccff3c6a0fd5debd46baeb69e413be285d5c7df6ffe5f939e5f9b4`. The file is intentionally ignored by Git.
+
+The playable build loops the selected Music 3.0 result for each scene at volume `0.16`, ducks it to `0.048` during MiniMax Speech, keeps the H3 video's own ambience at a lower spatial layer, and reserves deterministic Web Audio for UI, scope, heartbeat, breath, shot, hit and failure cues. `M` mutes all four layers.
